@@ -2,14 +2,16 @@ import { MarkdownRenderer } from './MarkdownRenderer'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ToolCallBlock } from './ToolCallBlock'
 import { PermissionBlock } from './PermissionBlock'
+import { AskUserQuestionBlock } from './AskUserQuestionBlock'
 import type { ChatMessage } from '../../types'
 
 interface MessageBubbleProps {
   message: ChatMessage
   onRespondPermission?: (messageId: string, optionId: string) => void
+  onRespondAskUserQuestion?: (messageId: string, answers: Record<string, string>) => void
 }
 
-export function MessageBubble({ message, onRespondPermission }: MessageBubbleProps) {
+export function MessageBubble({ message, onRespondPermission, onRespondAskUserQuestion }: MessageBubbleProps) {
   if (message.role === 'user') {
     return (
       <div className="flex justify-end">
@@ -42,6 +44,17 @@ export function MessageBubble({ message, onRespondPermission }: MessageBubblePro
   }
 
   if (message.role === 'permission_request' && message.permissionRequest) {
+    // Detect AskUserQuestion by checking rawInput.questions
+    const rawInput = message.permissionRequest.toolCall.rawInput
+    if (rawInput?.questions && Array.isArray(rawInput.questions)) {
+      return (
+        <AskUserQuestionBlock
+          permissionRequest={message.permissionRequest}
+          onSubmit={(answers) => onRespondAskUserQuestion?.(message.id, answers)}
+        />
+      )
+    }
+
     return (
       <PermissionBlock
         permissionRequest={message.permissionRequest}

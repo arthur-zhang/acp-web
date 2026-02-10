@@ -12,6 +12,7 @@ export default function App() {
     sendPrompt,
     clearMessages,
     respondToPermission,
+    respondToAskUserQuestion,
   } = useWebSocket()
 
   return (
@@ -25,6 +26,7 @@ export default function App() {
           agentState={agentState}
           onSendPrompt={sendPrompt}
           onRespondPermission={respondToPermission}
+          onRespondAskUserQuestion={respondToAskUserQuestion}
         />
       </div>
 

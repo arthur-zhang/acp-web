@@ -212,6 +212,46 @@ export function useWebSocket() {
     setAgentState('tool_calling')
   }, [addRawMessage])
 
+  const respondToAskUserQuestion = useCallback((messageId: string, answers: Record<string, string>) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
+
+    let jsonRpcId: number | null = null
+    let rawInput: Record<string, unknown> | undefined
+    setChatMessages(prev => {
+      const msg = prev.find(m => m.id === messageId && m.permissionRequest)
+      if (msg?.permissionRequest) {
+        jsonRpcId = msg.permissionRequest.jsonRpcId
+        rawInput = msg.permissionRequest.toolCall.rawInput
+      }
+      return prev.map(m =>
+        m.id === messageId && m.permissionRequest
+          ? { ...m, permissionRequest: { ...m.permissionRequest, resolved: true, selectedOptionId: 'allow', answers } }
+          : m
+      )
+    })
+
+    if (jsonRpcId === null) return
+
+    const response = {
+      jsonrpc: '2.0',
+      id: jsonRpcId,
+      result: {
+        outcome: {
+          outcome: 'selected',
+          optionId: 'allow',
+        },
+        updatedInput: {
+          questions: rawInput?.questions ?? [],
+          answers,
+        },
+      },
+    }
+
+    addRawMessage('sent', response)
+    wsRef.current.send(JSON.stringify(response))
+    setAgentState('tool_calling')
+  }, [addRawMessage])
+
   const sendInitialize = useCallback(() => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
 
@@ -261,9 +301,54 @@ export function useWebSocket() {
         const contentText = extractContentText(toolUpdate.content)
         const locations = toolUpdate.locations
 
+        // Extract parentToolCallId and toolName from _meta.claudeCode
+        const meta = toolUpdate._meta as Record<string, unknown> | undefined
+        const claudeCode = meta?.claudeCode as Record<string, unknown> | undefined
+        const parentToolCallId = typeof claudeCode?.parentToolCallId === 'string' ? claudeCode.parentToolCallId : undefined
+        const toolName = typeof claudeCode?.toolName === 'string' ? claudeCode.toolName : undefined
+
+        // Skip AskUserQuestion – it is displayed via the permission request flow
+        if (toolName === 'AskUserQuestion') return
+
+        // Helper: recursively find and update a tool call by id within nested children
+        const updateToolCallInList = (list: ToolCall[], id: string, updater: (tc: ToolCall) => ToolCall): ToolCall[] => {
+          return list.map(tc => {
+            if (tc.toolCallId === id) return updater(tc)
+            if (tc.children?.length) {
+              const updatedChildren = updateToolCallInList(tc.children, id, updater)
+              if (updatedChildren !== tc.children) return { ...tc, children: updatedChildren }
+            }
+            return tc
+          })
+        }
+
+        // Helper: recursively check if a tool call exists in nested children
+        const findToolCallInList = (list: ToolCall[], id: string): boolean => {
+          for (const tc of list) {
+            if (tc.toolCallId === id) return true
+            if (tc.children?.length && findToolCallInList(tc.children, id)) return true
+          }
+          return false
+        }
+
+        // Helper: add a child tool call under a parent in nested structure
+        const addChildToParent = (list: ToolCall[], parentId: string, child: ToolCall): ToolCall[] => {
+          return list.map(tc => {
+            if (tc.toolCallId === parentId) {
+              return { ...tc, children: [...(tc.children || []), child] }
+            }
+            if (tc.children?.length) {
+              const updatedChildren = addChildToParent(tc.children, parentId, child)
+              if (updatedChildren !== tc.children) return { ...tc, children: updatedChildren }
+            }
+            return tc
+          })
+        }
+
         setChatMessages(prev => {
+          // First, check if this tool call already exists (update case)
           const existingGroup = prev.find(
-            msg => msg.role === 'tool_call_group' && msg.toolCalls?.some(tc => tc.toolCallId === toolCallId)
+            msg => msg.role === 'tool_call_group' && msg.toolCalls && findToolCallInList(msg.toolCalls, toolCallId)
           )
 
           if (existingGroup) {
@@ -272,17 +357,14 @@ export function useWebSocket() {
               if (msg.id !== existingGroup.id || msg.role !== 'tool_call_group') return msg
               return {
                 ...msg,
-                toolCalls: msg.toolCalls?.map(tc => {
-                  if (tc.toolCallId !== toolCallId) return tc
-                  return {
-                    ...tc,
-                    ...(status && { status }),
-                    ...(title && { title }),
-                    ...(kind && { kind }),
-                    ...(contentText && { content: contentText }),
-                    ...(locations !== undefined && { locations }),
-                  }
-                }),
+                toolCalls: updateToolCallInList(msg.toolCalls!, toolCallId, tc => ({
+                  ...tc,
+                  ...(status && { status }),
+                  ...(title && { title }),
+                  ...(kind && { kind }),
+                  ...(contentText && { content: contentText }),
+                  ...(locations !== undefined && { locations }),
+                })),
               }
             })
           }
@@ -294,8 +376,26 @@ export function useWebSocket() {
             ...(kind && { kind }),
             ...(contentText && { content: contentText }),
             ...(locations !== undefined && { locations }),
+            ...(toolName && { toolName }),
+            ...(parentToolCallId && { parentToolCallId }),
           }
 
+          // If this tool call has a parent, nest it under the parent
+          if (parentToolCallId) {
+            const parentGroup = prev.find(
+              msg => msg.role === 'tool_call_group' && msg.toolCalls && findToolCallInList(msg.toolCalls, parentToolCallId)
+            )
+            if (parentGroup) {
+              toolCallGroupIdRef.current = parentGroup.id
+              return prev.map(msg =>
+                msg.id === parentGroup.id && msg.role === 'tool_call_group'
+                  ? { ...msg, toolCalls: addChildToParent(msg.toolCalls!, parentToolCallId, newToolCall) }
+                  : msg
+              )
+            }
+          }
+
+          // No parent or parent not found – add as top-level tool call
           if (toolCallGroupIdRef.current) {
             const currentGroupId = toolCallGroupIdRef.current
             const groupExists = prev.some(
@@ -410,7 +510,7 @@ export function useWebSocket() {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
 
     const request = createJsonRpcRequest('session/new', {
-      cwd: '/tmp',
+      cwd: '/Users/arthur/RustroverProjects/my-demo',
       mcpServers: [],
     } satisfies NewSessionRequest)
 
@@ -479,5 +579,6 @@ export function useWebSocket() {
     sendPrompt,
     clearMessages,
     respondToPermission,
+    respondToAskUserQuestion,
   }
 }

@@ -13,6 +13,7 @@ interface ChatPanelProps {
   agentState: AgentState
   onSendPrompt: (text: string) => void
   onRespondPermission: (messageId: string, optionId: string) => void
+  onRespondAskUserQuestion: (messageId: string, answers: Record<string, string>) => void
 }
 
 export function ChatPanel({
@@ -22,6 +23,7 @@ export function ChatPanel({
   agentState,
   onSendPrompt,
   onRespondPermission,
+  onRespondAskUserQuestion,
 }: ChatPanelProps) {
   const [input, setInput] = useState('')
   const [isAtBottom, setIsAtBottom] = useState(true)
@@ -75,6 +77,7 @@ export function ChatPanel({
                   key={msg.id}
                   message={msg}
                   onRespondPermission={onRespondPermission}
+                  onRespondAskUserQuestion={onRespondAskUserQuestion}
                 />
               ))}
             </div>

@@ -18,12 +18,27 @@ export interface ToolCall {
   kind?: string
   content?: string
   locations?: unknown
+  toolName?: string
+  parentToolCallId?: string
+  children?: ToolCall[]
 }
 
 export interface PermissionOption {
   kind: string
   name: string
   optionId: string
+}
+
+export interface AskUserQuestionOption {
+  label: string
+  description: string
+}
+
+export interface AskUserQuestion {
+  question: string
+  header: string
+  options: AskUserQuestionOption[]
+  multiSelect: boolean
 }
 
 export interface PermissionRequest {
@@ -36,6 +51,8 @@ export interface PermissionRequest {
   }
   resolved: boolean
   selectedOptionId?: string
+  /** AskUserQuestion: 用户选择的答案 */
+  answers?: Record<string, string>
 }
 
 export interface ChatMessage {
