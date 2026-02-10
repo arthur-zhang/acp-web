@@ -40,9 +40,57 @@ function getStatusIcon(status: string) {
   }
 }
 
+function getStatusBorderColor(status: string) {
+  switch (status) {
+    case 'completed':
+      return 'border-l-green-500/40'
+    case 'error':
+      return 'border-l-red-500/40'
+    default:
+      return 'border-l-blue-500/40'
+  }
+}
+
+function ToolCallItem({ tc }: { tc: ToolCall }) {
+  const [expanded, setExpanded] = useState(false)
+  const Icon = getToolIcon(tc.kind)
+  const hasContent = !!tc.content
+
+  return (
+    <div className={`border-l-2 ${getStatusBorderColor(tc.status)} rounded bg-gray-800/30`}>
+      <button
+        onClick={() => hasContent && setExpanded(!expanded)}
+        className={`flex items-center gap-2 text-sm py-1.5 px-2 w-full text-left ${
+          hasContent ? 'cursor-pointer hover:bg-gray-800/50' : 'cursor-default'
+        } transition-colors rounded`}
+      >
+        {hasContent && (
+          <ChevronRight
+            className={`w-3 h-3 text-gray-500 transition-transform duration-150 flex-shrink-0 ${
+              expanded ? 'rotate-90' : ''
+            }`}
+          />
+        )}
+        <Icon className="w-4 h-4 text-gray-500 flex-shrink-0" />
+        <span className="text-gray-300 truncate flex-1">{tc.title}</span>
+        {getStatusIcon(tc.status)}
+      </button>
+      {expanded && tc.content && (
+        <div className="px-3 pb-2 pt-0">
+          <pre className="text-xs text-gray-400 bg-gray-900/50 rounded p-2 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap break-words">
+            {tc.content}
+          </pre>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function ToolCallBlock({ toolCalls }: ToolCallBlockProps) {
   const [open, setOpen] = useState(false)
-  const completedCount = toolCalls.filter(tc => tc.status === 'completed').length
+  const completedCount = toolCalls.filter(tc => tc.status !== 'running').length
+  const hasError = toolCalls.some(tc => tc.status === 'error')
+  const allDone = toolCalls.every(tc => tc.status !== 'running')
 
   return (
     <Collapsible.Root open={open} onOpenChange={setOpen}>
@@ -52,8 +100,13 @@ export function ToolCallBlock({ toolCalls }: ToolCallBlockProps) {
           <ChevronRight
             className={`w-4 h-4 transition-transform duration-150 ${open ? 'rotate-90' : ''}`}
           />
-          <Wrench className="w-4 h-4 text-blue-400" />
-          <span className="text-blue-400 font-medium">
+          {allDone
+            ? (hasError
+              ? <AlertCircle className="w-4 h-4 text-red-400" />
+              : <Check className="w-4 h-4 text-green-400" />)
+            : <Loader2 className="w-4 h-4 text-blue-400 animate-spin" />
+          }
+          <span className={`font-medium ${allDone ? (hasError ? 'text-red-400' : 'text-green-400') : 'text-blue-400'}`}>
             {toolCalls.length} tool call{toolCalls.length !== 1 ? 's' : ''}
           </span>
           <span className="text-gray-500">
@@ -63,17 +116,9 @@ export function ToolCallBlock({ toolCalls }: ToolCallBlockProps) {
       </Collapsible.Trigger>
       <Collapsible.Content>
         <div className="pl-6 space-y-1 py-1">
-          {toolCalls.map(tc => {
-            const Icon = getToolIcon(tc.kind)
-            return (
-              <div key={tc.toolCallId}
-                className="flex items-center gap-2 text-sm py-1 px-2 rounded bg-gray-800/30">
-                <Icon className="w-4 h-4 text-gray-500 flex-shrink-0" />
-                <span className="text-gray-300 truncate flex-1">{tc.title}</span>
-                {getStatusIcon(tc.status)}
-              </div>
-            )
-          })}
+          {toolCalls.map(tc => (
+            <ToolCallItem key={tc.toolCallId} tc={tc} />
+          ))}
         </div>
       </Collapsible.Content>
     </Collapsible.Root>
