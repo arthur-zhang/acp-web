@@ -12,6 +12,7 @@ interface ChatPanelProps {
   messages: ChatMessage[]
   agentState: AgentState
   onSendPrompt: (text: string) => void
+  onRespondPermission: (messageId: string, optionId: string) => void
 }
 
 export function ChatPanel({
@@ -20,6 +21,7 @@ export function ChatPanel({
   messages,
   agentState,
   onSendPrompt,
+  onRespondPermission,
 }: ChatPanelProps) {
   const [input, setInput] = useState('')
   const [isAtBottom, setIsAtBottom] = useState(true)
@@ -69,7 +71,11 @@ export function ChatPanel({
           >
             <div className="space-y-4 max-w-3xl mx-auto">
               {messages.map((msg) => (
-                <MessageBubble key={msg.id} message={msg} />
+                <MessageBubble
+                  key={msg.id}
+                  message={msg}
+                  onRespondPermission={onRespondPermission}
+                />
               ))}
             </div>
           </ScrollArea.Viewport>

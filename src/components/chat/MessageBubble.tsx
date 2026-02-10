@@ -1,13 +1,15 @@
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ToolCallBlock } from './ToolCallBlock'
+import { PermissionBlock } from './PermissionBlock'
 import type { ChatMessage } from '../../types'
 
 interface MessageBubbleProps {
   message: ChatMessage
+  onRespondPermission?: (messageId: string, optionId: string) => void
 }
 
-export function MessageBubble({ message }: MessageBubbleProps) {
+export function MessageBubble({ message, onRespondPermission }: MessageBubbleProps) {
   if (message.role === 'user') {
     return (
       <div className="flex justify-end">
@@ -37,6 +39,15 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 
   if (message.role === 'tool_call_group' && message.toolCalls) {
     return <ToolCallBlock toolCalls={message.toolCalls} />
+  }
+
+  if (message.role === 'permission_request' && message.permissionRequest) {
+    return (
+      <PermissionBlock
+        permissionRequest={message.permissionRequest}
+        onRespond={(optionId) => onRespondPermission?.(message.id, optionId)}
+      />
+    )
   }
 
   // Assistant message with markdown

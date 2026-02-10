@@ -5,7 +5,7 @@ import type {
   SessionNotification,
   ContentBlock
 } from '@agentclientprotocol/sdk'
-import type { ConnectionStatus, RawMessage, ChatMessage, AgentState, ToolCall } from '../types'
+import type { ConnectionStatus, RawMessage, ChatMessage, AgentState, ToolCall, PermissionOption } from '../types'
 
 const WS_URL = 'ws://127.0.0.1:3000/ws'
 
@@ -146,6 +146,71 @@ export function useWebSocket() {
     toolCallGroupIdRef.current = null
     setAgentState('idle')
   }, [])
+
+  const handleServerRequest = useCallback((id: number, method: string, params: Record<string, unknown>) => {
+    if (method === 'session/request_permission') {
+      setAgentState('awaiting_permission')
+      // End text streaming
+      streamingRoleRef.current = null
+      streamingMessageIdRef.current = null
+
+      const options = (params.options as PermissionOption[]) || []
+      const toolCall = params.toolCall as { toolCallId?: string; title?: string; rawInput?: Record<string, unknown> } | undefined
+
+      const msgId = crypto.randomUUID()
+      setChatMessages(prev => [...prev, {
+        id: msgId,
+        role: 'permission_request' as const,
+        content: toolCall?.title || 'Permission required',
+        timestamp: new Date(),
+        permissionRequest: {
+          jsonRpcId: id,
+          options,
+          toolCall: {
+            toolCallId: toolCall?.toolCallId || '',
+            title: toolCall?.title || 'Unknown tool',
+            rawInput: toolCall?.rawInput,
+          },
+          resolved: false,
+        },
+      }])
+    }
+  }, [])
+
+  const respondToPermission = useCallback((messageId: string, optionId: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
+
+    // Find the permission request message to get the JSON-RPC id
+    let jsonRpcId: number | null = null
+    setChatMessages(prev => {
+      const msg = prev.find(m => m.id === messageId && m.permissionRequest)
+      if (msg?.permissionRequest) {
+        jsonRpcId = msg.permissionRequest.jsonRpcId
+      }
+      return prev.map(m =>
+        m.id === messageId && m.permissionRequest
+          ? { ...m, permissionRequest: { ...m.permissionRequest, resolved: true, selectedOptionId: optionId } }
+          : m
+      )
+    })
+
+    if (jsonRpcId === null) return
+
+    const response = {
+      jsonrpc: '2.0',
+      id: jsonRpcId,
+      result: {
+        outcome: {
+          outcome: 'selected',
+          optionId,
+        },
+      },
+    }
+
+    addRawMessage('sent', response)
+    wsRef.current.send(JSON.stringify(response))
+    setAgentState('tool_calling')
+  }, [addRawMessage])
 
   const sendInitialize = useCallback(() => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
@@ -294,7 +359,10 @@ export function useWebSocket() {
         const data = JSON.parse(event.data)
         addRawMessage('received', data)
 
-        if (data.result) {
+        if (data.method && data.id !== undefined) {
+          // Server-to-client JSON-RPC request (needs a response)
+          handleServerRequest(data.id, data.method, data.params)
+        } else if (data.result) {
           // Handle initialize response
           if (data.id === initRequestIdRef.current) {
             initRequestIdRef.current = null
@@ -330,7 +398,7 @@ export function useWebSocket() {
       addChatMessage('system', 'Disconnected')
       endStreaming()
     }
-  }, [addRawMessage, addChatMessage, endStreaming, handleNotification])
+  }, [addRawMessage, addChatMessage, endStreaming, handleNotification, handleServerRequest])
 
   const disconnect = useCallback(() => {
     wsRef.current?.close()
@@ -410,5 +478,6 @@ export function useWebSocket() {
     createSession,
     sendPrompt,
     clearMessages,
+    respondToPermission,
   }
 }

@@ -12,6 +12,7 @@ const stateLabels: Record<AgentState, string> = {
   thinking: 'Thinking...',
   tool_calling: 'Running tools...',
   responding: 'Writing...',
+  awaiting_permission: 'Awaiting permission...',
 }
 
 export function StatusBar({ agentState, connectionStatus, sessionId }: StatusBarProps) {
