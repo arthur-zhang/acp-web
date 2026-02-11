@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Shield, ShieldCheck, ShieldX, ChevronDown, AlertTriangle } from 'lucide-react'
+import { Shield, ShieldCheck, ShieldX, ChevronDown, AlertTriangle, Terminal } from 'lucide-react'
 import type { PermissionRequest } from '../../types'
 
 interface PermissionBlockProps {
@@ -10,14 +10,14 @@ interface PermissionBlockProps {
 function getButtonStyle(kind: string) {
   switch (kind) {
     case 'allow_always':
-      return 'border-emerald-500/35 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20 hover:border-emerald-400/45'
+      return 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 active:bg-emerald-500/30'
     case 'allow_once':
-      return 'border-blue-500/35 bg-blue-500/10 text-blue-200 hover:bg-blue-500/20 hover:border-blue-400/45'
+      return 'bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 active:bg-blue-500/30'
     case 'reject_once':
     case 'reject_always':
-      return 'border-red-500/35 bg-red-500/10 text-red-200 hover:bg-red-500/20 hover:border-red-400/45'
+      return 'bg-red-500/10 text-red-400 hover:bg-red-500/20 active:bg-red-500/30'
     default:
-      return 'border-gray-700/80 bg-gray-800/40 text-gray-200 hover:bg-gray-800/70'
+      return 'bg-gray-800 text-gray-300 hover:bg-gray-700'
   }
 }
 
@@ -38,12 +38,12 @@ function getSelectedStyle(kind: string) {
   switch (kind) {
     case 'allow_always':
     case 'allow_once':
-      return 'bg-emerald-500/15 border-emerald-500/35 text-emerald-200'
+      return 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
     case 'reject_once':
     case 'reject_always':
-      return 'bg-red-500/15 border-red-500/35 text-red-200'
+      return 'bg-red-500/15 border-red-500/30 text-red-300'
     default:
-      return 'bg-gray-800/60 border-gray-700/80 text-gray-200'
+      return 'bg-gray-800 border-gray-700 text-gray-300'
   }
 }
 
@@ -80,14 +80,12 @@ export function PermissionBlock({ permissionRequest, onRespond }: PermissionBloc
     const selectedKind = selectedOption?.kind ?? 'unknown'
 
     return (
-      <div className="flex justify-end">
+      <div className="flex justify-end my-1">
         <div
-          className={`max-w-[80%] rounded-2xl rounded-br-sm border px-3 py-2 shadow-sm ${getSelectedStyle(selectedKind)}`}
+          className={`rounded-xl border px-3 py-1.5 shadow-sm flex items-center gap-2 text-xs font-medium ${getSelectedStyle(selectedKind)}`}
         >
-          <span className="inline-flex items-center gap-1.5 text-xs font-medium">
-            {getButtonIcon(selectedKind)}
-            {selectedLabel}
-          </span>
+          {getButtonIcon(selectedKind)}
+          {selectedLabel}
         </div>
       </div>
     )
@@ -103,27 +101,58 @@ export function PermissionBlock({ permissionRequest, onRespond }: PermissionBloc
   const dangerousCommand = isDangerousCommand(command)
 
   return (
-    <div className="rounded-xl border border-gray-800/80 bg-gradient-to-b from-gray-900/70 to-gray-950/55 px-3.5 py-3 shadow-[0_8px_30px_rgba(0,0,0,0.2)]">
-      <div className="flex flex-wrap items-center gap-2.5">
-        <span className="inline-flex items-center gap-2 text-sm font-semibold text-gray-100">
-          <Shield className="h-4 w-4 text-amber-400" />
-          Permission Required
-        </span>
+    <div className="my-2 max-w-2xl rounded-xl border border-gray-800 bg-gray-900/40 p-3 shadow-lg">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <Shield className="h-4 w-4 text-amber-500" />
+          <span className="text-xs font-bold text-gray-200">Permission Required</span>
+          {dangerousCommand && (
+            <span className="flex items-center gap-1 rounded bg-red-500/10 px-1.5 py-0.5 text-[10px] font-bold text-red-400">
+              <AlertTriangle className="h-2.5 w-2.5" />
+              SENSITIVE
+            </span>
+          )}
+        </div>
+        {canExpand && (
+          <button
+            onClick={() => setExpanded(prev => !prev)}
+            className="text-gray-500 hover:text-gray-300 transition-colors"
+          >
+            <ChevronDown className={`h-4 w-4 transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`} />
+          </button>
+        )}
+      </div>
 
-        {dangerousCommand && (
-          <span className="inline-flex items-center gap-1 rounded-md border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 text-[10px] font-medium text-red-200">
-            <AlertTriangle className="h-3 w-3" />
-            Sensitive
-          </span>
+      <div className="space-y-3">
+        {description && (
+          <p className="text-xs text-gray-400 leading-relaxed px-1">
+            {description}
+          </p>
         )}
 
-        <div className="ml-auto flex flex-wrap gap-2">
+        {(command || title) && (
+          <div className="flex items-start gap-2.5 rounded-lg bg-black/30 p-2.5 font-mono text-[12px] border border-white/5">
+            <Terminal className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500/70" />
+            <div className="min-w-0 flex-1">
+              <code className={`block text-gray-200 ${expanded ? 'break-all whitespace-pre-wrap' : 'truncate'}`}>
+                {expanded ? command : truncateText(command || '', 140)}
+              </code>
+              {expanded && title && title !== command && (
+                <div className="mt-2 pt-2 border-t border-white/5 text-gray-400">
+                  <span className="text-[10px] font-bold text-gray-600 block mb-0.5">TITLE</span>
+                  {title}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
           {options.map(opt => (
             <button
               key={opt.optionId}
               onClick={() => onRespond(opt.optionId)}
-              className={`inline-flex cursor-pointer items-center gap-1.5 rounded-lg border px-3 py-1.5
-                text-xs font-semibold transition-colors ${getButtonStyle(opt.kind)}`}
+              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[11px] font-bold transition-all ${getButtonStyle(opt.kind)}`}
             >
               {getButtonIcon(opt.kind)}
               {opt.name}
@@ -131,55 +160,6 @@ export function PermissionBlock({ permissionRequest, onRespond }: PermissionBloc
           ))}
         </div>
       </div>
-
-      {(description || command || title) && (
-        <div className="mt-3 rounded-lg border border-gray-800/80 bg-gray-950/45 px-2.5 py-2">
-          {description && (
-            <p className="mb-2 text-xs leading-relaxed text-gray-300">
-              {description}
-            </p>
-          )}
-
-          {command && (
-            <div className="flex items-start gap-2">
-              <span className="mt-1.5 inline-flex w-9 flex-shrink-0 justify-center text-[10px] font-medium uppercase tracking-wide text-gray-500">
-                CMD
-              </span>
-              <span className="mt-1.5 text-gray-600">›</span>
-              <code
-                className={`min-w-0 flex-1 rounded-md border border-gray-800/80 bg-gray-900/60 px-2.5 py-1.5 text-[12px] text-gray-100 font-mono ${
-                  expanded ? 'break-all whitespace-pre-wrap' : 'truncate'
-                }`}
-              >
-                {expanded ? command : truncateText(command, 140)}
-              </code>
-
-              {canExpand && (
-                <button
-                  onClick={() => setExpanded(prev => !prev)}
-                  className="mt-1 inline-flex h-6 w-6 items-center justify-center rounded-md text-gray-400 hover:bg-gray-800/70 hover:text-gray-200 transition-colors"
-                  type="button"
-                  title={expanded ? 'Collapse' : 'Expand'}
-                >
-                  <ChevronDown className={`h-3.5 w-3.5 transition-transform ${expanded ? 'rotate-180' : ''}`} />
-                </button>
-              )}
-            </div>
-          )}
-
-          {expanded && title && (
-            <div className="mt-2 flex items-start gap-2">
-              <span className="mt-1.5 inline-flex w-9 flex-shrink-0 justify-center text-[10px] font-medium uppercase tracking-wide text-gray-500">
-                TITLE
-              </span>
-              <span className="mt-1.5 text-gray-600">›</span>
-              <code className="min-w-0 flex-1 break-all whitespace-pre-wrap rounded-md border border-gray-800/80 bg-gray-900/60 px-2.5 py-1.5 text-[12px] text-gray-300 font-mono">
-                {title}
-              </code>
-            </div>
-          )}
-        </div>
-      )}
     </div>
   )
 }
