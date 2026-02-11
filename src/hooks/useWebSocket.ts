@@ -752,7 +752,6 @@ export function useWebSocket() {
         } else if (data.error) {
           addChatMessage('system', `Error: ${data.error.message}`)
           endStreaming()
-          completeActiveRound('error')
         } else if (data.method) {
           handleNotification(data.method, data.params)
         }
@@ -875,8 +874,7 @@ export function useWebSocket() {
 
     addRawMessage('sent', notification)
     wsRef.current.send(JSON.stringify(notification))
-    completeActiveRound('cancelled')
-  }, [sessionId, addRawMessage, addChatMessage, cancelPendingPermissionRequests, completeActiveRound])
+  }, [sessionId, addRawMessage, addChatMessage, cancelPendingPermissionRequests])
 
   const clearMessages = useCallback(() => {
     setRawMessages([])

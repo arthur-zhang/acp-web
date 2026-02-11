@@ -293,7 +293,9 @@ export function ChatPanel({
                   )
                 }
 
-                const shouldExpandGroup = index === displayItems.length - 1 && !item.isComplete
+                const roundMetrics = roundMetricsByPromptId[item.prompt.id]
+                const isRoundComplete = Boolean(roundMetrics?.endedAt)
+                const shouldExpandGroup = index === displayItems.length - 1 && !isRoundComplete
                 const shouldGroupMiddleMessages =
                   item.middleMessages.length > 1
                   || item.middleMessages.some(
@@ -307,8 +309,6 @@ export function ChatPanel({
                       onRespondPermission={onRespondPermission}
                       onRespondAskUserQuestion={onRespondAskUserQuestion}
                     />
-
-                    <RoundMetricsRow metrics={roundMetricsByPromptId[item.prompt.id]} />
 
                     {item.middleMessages.length > 0 && shouldGroupMiddleMessages && (
                       <InteractionGroup
@@ -336,6 +336,8 @@ export function ChatPanel({
                         onRespondAskUserQuestion={onRespondAskUserQuestion}
                       />
                     )}
+
+                    <RoundMetricsRow metrics={roundMetricsByPromptId[item.prompt.id]} />
                   </div>
                 )
               })}

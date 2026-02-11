@@ -1,7 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import * as Collapsible from '@radix-ui/react-collapsible'
-import { ChevronRight, Plus, Brain, FileSearch, Terminal, FileText, Pencil, Wrench, Bot } from 'lucide-react'
+import {
+  ChevronRight,
+  Plus,
+  Brain,
+  FileSearch,
+  Terminal,
+  FileText,
+  Pencil,
+  Wrench,
+  Bot,
+  Shield,
+  MessageCircleQuestion,
+} from 'lucide-react'
 import { MessageBubble } from './MessageBubble'
 import type { ChatMessage, ToolCall } from '../../types'
 import { countAllToolCalls, countSubagentToolCalls } from './toolCallCounts'
@@ -92,6 +104,31 @@ function normalizeDetails(details: string): string {
   return details
     .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
     .replace(/\r\n/g, '\n')
+}
+
+function getResolvedPermissionSummary(message: ChatMessage): { label: string; badge: string; icon: LucideIcon } | null {
+  if (message.role !== 'permission_request' || !message.permissionRequest?.resolved) return null
+
+  const rawInput = message.permissionRequest.toolCall.rawInput
+  const hasQuestions = Array.isArray(rawInput?.questions)
+
+  if (hasQuestions) {
+    return {
+      label: 'User input',
+      badge: 'ANSWERED',
+      icon: MessageCircleQuestion,
+    }
+  }
+
+  const selectedOptionId = message.permissionRequest.selectedOptionId
+  const selectedOption = message.permissionRequest.options.find(option => option.optionId === selectedOptionId)
+  const badge = selectedOption?.name?.toUpperCase() ?? (selectedOptionId === 'cancelled' ? 'CANCELLED' : 'SELECTED')
+
+  return {
+    label: 'Permission',
+    badge,
+    icon: Shield,
+  }
 }
 
 function CompactRow({ label, icon: Icon, tag, details, indent = 0 }: CompactRowProps) {
@@ -208,6 +245,21 @@ export function InteractionGroup({
       <Collapsible.Content>
         <div className="space-y-2 pl-1 py-1">
           {messages.map((msg) => {
+            const resolvedPermissionSummary = getResolvedPermissionSummary(msg)
+            if (resolvedPermissionSummary) {
+              const Icon = resolvedPermissionSummary.icon
+
+              return (
+                <div key={msg.id} className="flex items-center gap-2 px-1 py-0.5">
+                  <Icon className="h-4 w-4 flex-shrink-0 text-gray-500" />
+                  <span className="text-sm font-medium text-gray-200">{resolvedPermissionSummary.label}</span>
+                  <span className="inline-flex items-center rounded-md border border-gray-700/80 bg-gray-800/50 px-2 py-0.5 text-[11px] font-medium tracking-wide text-gray-300">
+                    {resolvedPermissionSummary.badge}
+                  </span>
+                </div>
+              )
+            }
+
             if (msg.role === 'thought') {
               const preview = msg.content?.trim()
               return (
