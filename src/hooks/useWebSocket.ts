@@ -3,7 +3,8 @@ import type {
   NewSessionRequest,
   PromptRequest,
   SessionNotification,
-  ContentBlock
+  ContentBlock,
+  CancelNotification
 } from '@agentclientprotocol/sdk'
 import type { ConnectionStatus, RawMessage, ChatMessage, AgentState, ToolCall, PermissionOption } from '../types'
 
@@ -252,6 +253,50 @@ export function useWebSocket() {
     setAgentState('tool_calling')
   }, [addRawMessage])
 
+  const cancelPendingPermissionRequests = useCallback(() => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
+
+    const responses: Array<{
+      jsonrpc: '2.0'
+      id: number
+      result: {
+        outcome: {
+          outcome: 'cancelled'
+        }
+      }
+    }> = []
+
+    setChatMessages(prev => prev.map(msg => {
+      if (msg.role !== 'permission_request' || !msg.permissionRequest || msg.permissionRequest.resolved) {
+        return msg
+      }
+
+      responses.push({
+        jsonrpc: '2.0',
+        id: msg.permissionRequest.jsonRpcId,
+        result: {
+          outcome: {
+            outcome: 'cancelled',
+          },
+        },
+      })
+
+      return {
+        ...msg,
+        permissionRequest: {
+          ...msg.permissionRequest,
+          resolved: true,
+          selectedOptionId: 'cancelled',
+        },
+      }
+    }))
+
+    for (const response of responses) {
+      addRawMessage('sent', response)
+      wsRef.current.send(JSON.stringify(response))
+    }
+  }, [addRawMessage])
+
   const sendInitialize = useCallback(() => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
 
@@ -362,6 +407,7 @@ export function useWebSocket() {
                   ...(status && { status }),
                   ...(title && { title }),
                   ...(kind && { kind }),
+                  ...(toolName && { toolName }),
                   ...(contentText && { content: contentText }),
                   ...(locations !== undefined && { locations }),
                 })),
@@ -523,6 +569,7 @@ export function useWebSocket() {
 
     addChatMessage('user', text)
     endStreaming()
+    setAgentState('thinking')
 
     const request = createJsonRpcRequest('session/prompt', {
       sessionId,
@@ -532,6 +579,23 @@ export function useWebSocket() {
     addRawMessage('sent', request)
     wsRef.current.send(JSON.stringify(request))
   }, [sessionId, addRawMessage, addChatMessage, endStreaming])
+
+  const interrupt = useCallback(() => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || !sessionId) return
+
+    cancelPendingPermissionRequests()
+
+    const notification = {
+      jsonrpc: '2.0',
+      method: 'session/cancel',
+      params: {
+        sessionId,
+      } satisfies CancelNotification,
+    }
+
+    addRawMessage('sent', notification)
+    wsRef.current.send(JSON.stringify(notification))
+  }, [sessionId, addRawMessage, addChatMessage, cancelPendingPermissionRequests])
 
   const clearMessages = useCallback(() => {
     setRawMessages([])
@@ -577,6 +641,7 @@ export function useWebSocket() {
     disconnect,
     createSession,
     sendPrompt,
+    interrupt,
     clearMessages,
     respondToPermission,
     respondToAskUserQuestion,

@@ -1,33 +1,9 @@
-import { useState } from 'react'
-import * as Collapsible from '@radix-ui/react-collapsible'
-import {
-  ChevronRight, Wrench, FileSearch, FileText,
-  Terminal, Pencil, Check, Loader2, AlertCircle, Bot
-} from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { ChevronRight, Check, Loader2, AlertCircle, Plus, FileSearch, Terminal, FileText, Pencil, Wrench, Bot } from 'lucide-react'
 import type { ToolCall } from '../../types'
 
 interface ToolCallBlockProps {
   toolCalls: ToolCall[]
-}
-
-function getToolIcon(kind?: string, toolName?: string) {
-  if (toolName === 'Task') return Bot
-  switch (kind?.toLowerCase()) {
-    case 'glob':
-    case 'grep':
-    case 'search':
-      return FileSearch
-    case 'read':
-      return FileText
-    case 'edit':
-    case 'write':
-      return Pencil
-    case 'bash':
-    case 'execute':
-      return Terminal
-    default:
-      return Wrench
-  }
 }
 
 function getStatusIcon(status: string) {
@@ -41,118 +17,145 @@ function getStatusIcon(status: string) {
   }
 }
 
-function getStatusBorderColor(status: string) {
-  switch (status) {
-    case 'completed':
-      return 'border-l-green-500/40'
-    case 'error':
-      return 'border-l-red-500/40'
+function getKindIcon(tc: ToolCall) {
+  if (tc.toolName === 'Task') return Bot
+
+  switch (tc.kind?.toLowerCase()) {
+    case 'search':
+    case 'glob':
+    case 'grep':
+      return FileSearch
+    case 'bash':
+    case 'execute':
+      return Terminal
+    case 'read':
+      return FileText
+    case 'edit':
+    case 'write':
+      return Pencil
     default:
-      return 'border-l-blue-500/40'
+      return Wrench
   }
 }
 
-/** Count all tool calls recursively (including the item itself) */
-function countAllToolCalls(tc: ToolCall): number {
-  let count = 1
-  if (tc.children?.length) {
-    for (const child of tc.children) {
-      count += countAllToolCalls(child)
-    }
-  }
-  return count
+function normalizeContent(content: string): string {
+  return content
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    .replace(/\r\n/g, '\n')
 }
 
-/** Count completed tool calls recursively (including the item itself) */
-function countCompletedToolCalls(tc: ToolCall): number {
-  let count = tc.status !== 'running' ? 1 : 0
-  if (tc.children?.length) {
-    for (const child of tc.children) {
-      count += countCompletedToolCalls(child)
-    }
+function isShellTool(tc: ToolCall): boolean {
+  const kind = tc.kind?.toLowerCase()
+  const toolName = tc.toolName?.toLowerCase()
+  return kind === 'bash' || kind === 'execute' || toolName === 'bash' || toolName === 'execute'
+}
+
+function formatTerminalTranscript(content: string, tc: ToolCall): string {
+  const normalized = normalizeContent(content)
+  if (!isShellTool(tc)) return normalized
+
+  const lines = normalized.split('\n')
+  let commandMarked = false
+
+  return lines
+    .map((line) => {
+      const trimmed = line.trim()
+      if (!trimmed) return line
+
+      if (/^[>$%]\s/.test(trimmed)) {
+        commandMarked = true
+        return line.replace(/^\s*[>$%]\s*/, '> ')
+      }
+
+      if (!commandMarked) {
+        commandMarked = true
+        return `> ${line}`
+      }
+
+      return line
+    })
+    .join('\n')
+}
+
+function getTitleCodeLabel(title: string): string {
+  const codeMatch = title.match(/`([^`]+)`/)
+  if (codeMatch?.[1]) return codeMatch[1]
+
+  return title.replace(/`/g, '').trim()
+}
+
+function getHeaderLabels(tc: ToolCall): { toolNameLabel: string; titleLabel?: string } {
+  const toolNameLabel = tc.toolName?.trim() || tc.kind?.trim() || 'Tool'
+  const title = tc.title?.trim()
+
+  if (title && title !== toolNameLabel) {
+    return { toolNameLabel, titleLabel: getTitleCodeLabel(title) }
   }
-  return count
+
+  return { toolNameLabel }
 }
 
 function ToolCallItem({ tc, depth = 0 }: { tc: ToolCall; depth?: number }) {
-  const [expanded, setExpanded] = useState(false)
-  const [childrenOpen, setChildrenOpen] = useState(false)
-  const Icon = getToolIcon(tc.kind, tc.toolName)
-  const hasContent = !!tc.content
-  const hasChildren = !!(tc.children?.length)
-  const isTask = tc.toolName === 'Task'
+  const hasContent = Boolean(tc.content)
+  const hasChildren = Boolean(tc.children?.length)
+  const canExpand = hasContent || hasChildren
+  const [open, setOpen] = useState(tc.status === 'running')
+  const [hovered, setHovered] = useState(false)
+  const { toolNameLabel, titleLabel } = getHeaderLabels(tc)
+  const KindIcon = getKindIcon(tc)
+  const showExpandHint = canExpand && !open && hovered
 
-  // For Task items, show a subagent-style collapsible block
-  if (isTask && hasChildren) {
-    const totalChildren = tc.children!.reduce((sum, c) => sum + countAllToolCalls(c), 0)
-    const completedChildren = tc.children!.reduce((sum, c) => sum + countCompletedToolCalls(c), 0)
-    const allChildrenDone = tc.children!.every(c => c.status !== 'running')
-    const hasChildError = tc.children!.some(c => c.status === 'error')
-
-    return (
-      <div className={`border-l-2 ${getStatusBorderColor(tc.status)} rounded bg-gray-800/20`}>
-        <Collapsible.Root open={childrenOpen} onOpenChange={setChildrenOpen}>
-          <Collapsible.Trigger asChild>
-            <button
-              className="flex items-center gap-2 text-sm py-1.5 px-2 w-full text-left
-                cursor-pointer hover:bg-gray-800/50 transition-colors rounded"
-            >
-              <ChevronRight
-                className={`w-3 h-3 text-gray-500 transition-transform duration-150 flex-shrink-0 ${
-                  childrenOpen ? 'rotate-90' : ''
-                }`}
-              />
-              <Icon className="w-4 h-4 text-purple-400 flex-shrink-0" />
-              <span className="text-gray-300 truncate flex-1">{tc.title}</span>
-              <span className="text-xs text-gray-500">
-                {completedChildren}/{totalChildren}
-              </span>
-              {tc.status !== 'running'
-                ? (allChildrenDone && !hasChildError
-                  ? <Check className="w-3.5 h-3.5 text-green-400" />
-                  : hasChildError
-                    ? <AlertCircle className="w-3.5 h-3.5 text-red-400" />
-                    : getStatusIcon(tc.status))
-                : <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin" />
-              }
-            </button>
-          </Collapsible.Trigger>
-          <Collapsible.Content>
-            <div className="pl-4 space-y-1 py-1">
-              {tc.children!.map(child => (
-                <ToolCallItem key={child.toolCallId} tc={child} depth={depth + 1} />
-              ))}
-            </div>
-          </Collapsible.Content>
-        </Collapsible.Root>
-      </div>
-    )
-  }
+  useEffect(() => {
+    if (tc.status !== 'running') {
+      setOpen(false)
+    }
+  }, [tc.status])
 
   return (
-    <div className={`border-l-2 ${getStatusBorderColor(tc.status)} rounded bg-gray-800/30`}>
+    <div className={depth > 0 ? 'ml-5 space-y-2' : 'space-y-2'}>
       <button
-        onClick={() => hasContent && setExpanded(!expanded)}
-        className={`flex items-center gap-2 text-sm py-1.5 px-2 w-full text-left ${
-          hasContent ? 'cursor-pointer hover:bg-gray-800/50' : 'cursor-default'
-        } transition-colors rounded`}
+        onClick={() => canExpand && setOpen((prev) => !prev)}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        className={`flex w-full items-center gap-2 rounded px-1 py-0.5 text-left text-gray-200 transition-colors ${
+          canExpand ? 'hover:bg-gray-800/20 cursor-pointer' : 'cursor-default'
+        }`}
       >
-        {hasContent && (
+        {showExpandHint ? (
+          <Plus className="h-4 w-4 flex-shrink-0 text-gray-400" />
+        ) : !open ? (
+          <KindIcon className="h-4 w-4 flex-shrink-0 text-gray-400" />
+        ) : (
           <ChevronRight
-            className={`w-3 h-3 text-gray-500 transition-transform duration-150 flex-shrink-0 ${
-              expanded ? 'rotate-90' : ''
+            className={`h-4 w-4 flex-shrink-0 text-gray-500 transition-transform duration-150 ${
+              open && canExpand ? 'rotate-90' : ''
             }`}
           />
         )}
-        <Icon className="w-4 h-4 text-gray-500 flex-shrink-0" />
-        <span className="text-gray-300 truncate flex-1">{tc.title}</span>
-        {getStatusIcon(tc.status)}
+        <div className="flex min-w-0 items-baseline gap-2">
+          <span className="flex-shrink-0 text-sm font-medium text-gray-100">{toolNameLabel}</span>
+          {titleLabel && (
+            <code className="inline-block max-w-[24rem] truncate rounded-md border border-gray-700/70 bg-gray-800/80 px-1.5 py-0.5 text-xs text-gray-200">
+              {titleLabel}
+            </code>
+          )}
+        </div>
+        <span className="ml-auto flex-shrink-0">{getStatusIcon(tc.status)}</span>
       </button>
-      {expanded && tc.content && (
-        <div className="px-3 pb-2 pt-0">
-          <pre className="text-xs text-gray-400 bg-gray-900/50 rounded p-2 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap break-words">
-            {tc.content}
+
+      {open && hasContent && (
+        <div className="ml-8 rounded-2xl border border-gray-700/80 bg-gray-800/45 px-4 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+          <pre className="whitespace-pre-wrap break-words text-[13px] leading-6 text-gray-100">
+            {formatTerminalTranscript(tc.content || '', tc)}
           </pre>
+        </div>
+      )}
+
+      {open && hasChildren && (
+        <div className="space-y-2">
+          {tc.children!.map((child) => (
+            <ToolCallItem key={child.toolCallId} tc={child} depth={depth + 1} />
+          ))}
         </div>
       )}
     </div>
@@ -160,49 +163,11 @@ function ToolCallItem({ tc, depth = 0 }: { tc: ToolCall; depth?: number }) {
 }
 
 export function ToolCallBlock({ toolCalls }: ToolCallBlockProps) {
-  const [open, setOpen] = useState(false)
-
-  // Recursively count all tool calls (flat total)
-  const totalCount = toolCalls.reduce((sum, tc) => sum + countAllToolCalls(tc), 0)
-  const completedCount = toolCalls.reduce((sum, tc) => sum + countCompletedToolCalls(tc), 0)
-
-  const hasRunning = (list: ToolCall[]): boolean =>
-    list.some(tc => tc.status === 'running' || (tc.children?.length ? hasRunning(tc.children) : false))
-  const hasErrorDeep = (list: ToolCall[]): boolean =>
-    list.some(tc => tc.status === 'error' || (tc.children?.length ? hasErrorDeep(tc.children) : false))
-
-  const allDone = !hasRunning(toolCalls)
-  const hasError = hasErrorDeep(toolCalls)
-
   return (
-    <Collapsible.Root open={open} onOpenChange={setOpen}>
-      <Collapsible.Trigger asChild>
-        <button className="flex items-center gap-2 text-sm text-gray-400 hover:text-gray-300
-          py-1.5 px-2 rounded hover:bg-gray-800/50 transition-colors w-full text-left">
-          <ChevronRight
-            className={`w-4 h-4 transition-transform duration-150 ${open ? 'rotate-90' : ''}`}
-          />
-          {allDone
-            ? (hasError
-              ? <AlertCircle className="w-4 h-4 text-red-400" />
-              : <Check className="w-4 h-4 text-green-400" />)
-            : <Loader2 className="w-4 h-4 text-blue-400 animate-spin" />
-          }
-          <span className={`font-medium ${allDone ? (hasError ? 'text-red-400' : 'text-green-400') : 'text-blue-400'}`}>
-            {totalCount} tool call{totalCount !== 1 ? 's' : ''}
-          </span>
-          <span className="text-gray-500">
-            ({completedCount}/{totalCount} completed)
-          </span>
-        </button>
-      </Collapsible.Trigger>
-      <Collapsible.Content>
-        <div className="pl-6 space-y-1 py-1">
-          {toolCalls.map(tc => (
-            <ToolCallItem key={tc.toolCallId} tc={tc} />
-          ))}
-        </div>
-      </Collapsible.Content>
-    </Collapsible.Root>
+    <div className="space-y-2 toolcall-font">
+      {toolCalls.map((tc) => (
+        <ToolCallItem key={tc.toolCallId} tc={tc} />
+      ))}
+    </div>
   )
 }

@@ -1,3 +1,4 @@
+@import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&display=swap');
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -42,3 +43,7 @@ body {
   from { height: var(--radix-collapsible-content-height); opacity: 1; overflow: hidden; }
   to { height: 0; opacity: 0; overflow: hidden; }
 }
+.toolcall-font {
+  font-family: 'Geist Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+}
+

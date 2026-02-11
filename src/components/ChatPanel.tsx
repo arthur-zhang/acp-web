@@ -1,7 +1,8 @@
-import { useState, useEffect, useRef, useCallback, KeyboardEvent } from 'react'
+import { useState, useEffect, useRef, useCallback, KeyboardEvent, useMemo } from 'react'
 import * as ScrollArea from '@radix-ui/react-scroll-area'
-import { ArrowUp } from 'lucide-react'
+import { ArrowUp, Square } from 'lucide-react'
 import { MessageBubble } from './chat/MessageBubble'
+import { InteractionGroup } from './chat/InteractionGroup'
 import { ScrollToBottom } from './chat/ScrollToBottom'
 import { StatusBar } from './chat/StatusBar'
 import type { ConnectionStatus, ChatMessage, AgentState } from '../types'
@@ -14,6 +15,72 @@ interface ChatPanelProps {
   onSendPrompt: (text: string) => void
   onRespondPermission: (messageId: string, optionId: string) => void
   onRespondAskUserQuestion: (messageId: string, answers: Record<string, string>) => void
+  onInterrupt: () => void
+}
+
+type DisplayItem =
+  | { type: 'single'; message: ChatMessage }
+  | {
+      type: 'round'
+      id: string
+      prompt: ChatMessage
+      middleMessages: ChatMessage[]
+      resultMessage?: ChatMessage
+      isComplete: boolean
+    }
+
+function buildDisplayItems(messages: ChatMessage[]): DisplayItem[] {
+  const items: DisplayItem[] = []
+
+  let activeRound:
+    | {
+        prompt: ChatMessage
+        responses: ChatMessage[]
+      }
+    | null = null
+
+  const flushRound = () => {
+    if (!activeRound) return
+
+    const { prompt, responses } = activeRound
+    const lastMessage = responses[responses.length - 1]
+    const hasFinalResult = lastMessage?.role === 'assistant'
+    const resultMessage = hasFinalResult ? lastMessage : undefined
+    const middleMessages = hasFinalResult ? responses.slice(0, -1) : responses
+
+    items.push({
+      type: 'round',
+      id: prompt.id,
+      prompt,
+      middleMessages,
+      resultMessage,
+      isComplete: hasFinalResult,
+    })
+
+    activeRound = null
+  }
+
+  for (const message of messages) {
+    if (message.role === 'user') {
+      flushRound()
+      activeRound = {
+        prompt: message,
+        responses: [],
+      }
+      continue
+    }
+
+    if (activeRound) {
+      activeRound.responses.push(message)
+      continue
+    }
+
+    items.push({ type: 'single', message })
+  }
+
+  flushRound()
+
+  return items
 }
 
 export function ChatPanel({
@@ -24,10 +91,14 @@ export function ChatPanel({
   onSendPrompt,
   onRespondPermission,
   onRespondAskUserQuestion,
+  onInterrupt,
 }: ChatPanelProps) {
   const [input, setInput] = useState('')
   const [isAtBottom, setIsAtBottom] = useState(true)
+  const isActive = agentState !== 'idle'
   const viewportRef = useRef<HTMLDivElement>(null)
+
+  const displayItems = useMemo(() => buildDisplayItems(messages), [messages])
 
   const handleScroll = useCallback(() => {
     if (!viewportRef.current) return
@@ -49,15 +120,21 @@ export function ChatPanel({
   }
 
   const handleSend = () => {
-    if (!input.trim() || !sessionId) return
-    onSendPrompt(input.trim())
+    const trimmedInput = input.trim()
+    if (!trimmedInput || !sessionId) return
+
     setInput('')
+    onSendPrompt(trimmedInput)
   }
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      handleSend()
+      if (isActive) {
+        onInterrupt()
+      } else {
+        handleSend()
+      }
     }
   }
 
@@ -72,14 +149,47 @@ export function ChatPanel({
             onScroll={handleScroll}
           >
             <div className="space-y-4 max-w-3xl mx-auto">
-              {messages.map((msg) => (
-                <MessageBubble
-                  key={msg.id}
-                  message={msg}
-                  onRespondPermission={onRespondPermission}
-                  onRespondAskUserQuestion={onRespondAskUserQuestion}
-                />
-              ))}
+              {displayItems.map((item, index) => {
+                if (item.type === 'single') {
+                  return (
+                    <MessageBubble
+                      key={item.message.id}
+                      message={item.message}
+                      onRespondPermission={onRespondPermission}
+                      onRespondAskUserQuestion={onRespondAskUserQuestion}
+                    />
+                  )
+                }
+
+                const shouldExpandGroup = index === displayItems.length - 1 && !item.isComplete
+
+                return (
+                  <div key={item.id} className="space-y-3">
+                    <MessageBubble
+                      message={item.prompt}
+                      onRespondPermission={onRespondPermission}
+                      onRespondAskUserQuestion={onRespondAskUserQuestion}
+                    />
+
+                    {item.middleMessages.length > 0 && (
+                      <InteractionGroup
+                        messages={item.middleMessages}
+                        isLatest={shouldExpandGroup}
+                        onRespondPermission={onRespondPermission}
+                        onRespondAskUserQuestion={onRespondAskUserQuestion}
+                      />
+                    )}
+
+                    {item.resultMessage && (
+                      <MessageBubble
+                        message={item.resultMessage}
+                        onRespondPermission={onRespondPermission}
+                        onRespondAskUserQuestion={onRespondAskUserQuestion}
+                      />
+                    )}
+                  </div>
+                )
+              })}
             </div>
           </ScrollArea.Viewport>
           <ScrollArea.Scrollbar
@@ -111,13 +221,19 @@ export function ChatPanel({
               disabled:opacity-50 transition-colors"
           />
           <button
-            onClick={handleSend}
-            disabled={!sessionId || !input.trim()}
-            className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg
-              bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500
-              transition-colors"
+            onClick={isActive ? onInterrupt : handleSend}
+            disabled={!sessionId || (!isActive && !input.trim())}
+            className={`absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg
+              transition-colors ${
+                isActive
+                  ? 'bg-red-600 hover:bg-red-500'
+                  : 'bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500'
+              }`}
           >
-            <ArrowUp className="w-4 h-4" />
+            {isActive
+              ? <Square className="w-4 h-4 fill-current" />
+              : <ArrowUp className="w-4 h-4" />
+            }
           </button>
         </div>
       </div>

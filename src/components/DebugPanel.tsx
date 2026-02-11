@@ -4,34 +4,42 @@ import * as Collapsible from '@radix-ui/react-collapsible'
 import { ArrowUpRight, ArrowDownLeft, ChevronRight, Trash2 } from 'lucide-react'
 import type { RawMessage } from '../types'
 
+type ChunkType = 'agent_message_chunk' | 'agent_thought_chunk'
+
 type GroupedItem =
   | { type: 'single'; message: RawMessage }
-  | { type: 'chunk_group'; messages: RawMessage[] }
+  | { type: 'chunk_group'; messages: RawMessage[]; chunkType: ChunkType }
 
-function isAgentMessageChunk(msg: RawMessage): boolean {
+function getChunkType(msg: RawMessage): ChunkType | null {
   if (typeof msg.data === 'object' && msg.data !== null) {
     const obj = msg.data as Record<string, unknown>
     if (obj.method === 'session/update' && obj.params) {
       const params = obj.params as Record<string, unknown>
       const update = params.update as Record<string, unknown> | undefined
-      return update?.sessionUpdate === 'agent_message_chunk'
+      const sessionUpdate = update?.sessionUpdate
+      if (sessionUpdate === 'agent_message_chunk' || sessionUpdate === 'agent_thought_chunk') {
+        return sessionUpdate
+      }
     }
   }
-  return false
+  return null
 }
 
 function groupMessages(messages: RawMessage[]): GroupedItem[] {
   const result: GroupedItem[] = []
   let i = 0
   while (i < messages.length) {
-    if (isAgentMessageChunk(messages[i])) {
+    const chunkType = getChunkType(messages[i])
+
+    if (chunkType) {
       const chunks: RawMessage[] = [messages[i]]
-      while (i + 1 < messages.length && isAgentMessageChunk(messages[i + 1])) {
+      while (i + 1 < messages.length && getChunkType(messages[i + 1]) === chunkType) {
         i++
         chunks.push(messages[i])
       }
+
       if (chunks.length > 1) {
-        result.push({ type: 'chunk_group', messages: chunks })
+        result.push({ type: 'chunk_group', messages: chunks, chunkType })
       } else {
         result.push({ type: 'single', message: chunks[0] })
       }
@@ -81,7 +89,11 @@ export function DebugPanel({ messages, onClear }: DebugPanelProps) {
               item.type === 'single' ? (
                 <MessageItem key={item.message.id} message={item.message} />
               ) : (
-                <ChunkGroupItem key={`chunk-group-${idx}`} messages={item.messages} />
+                <ChunkGroupItem
+                  key={`chunk-group-${item.chunkType}-${idx}`}
+                  messages={item.messages}
+                  chunkType={item.chunkType}
+                />
               )
             )}
           </div>
@@ -172,10 +184,26 @@ function MessageItem({ message }: { message: RawMessage }) {
   )
 }
 
-function ChunkGroupItem({ messages }: { messages: RawMessage[] }) {
+function getChunkStyle(chunkType: ChunkType): { counterBadgeClass: string; borderClass: string } {
+  switch (chunkType) {
+    case 'agent_thought_chunk':
+      return {
+        counterBadgeClass: 'text-indigo-400 bg-indigo-400/10',
+        borderClass: 'border-indigo-900/50',
+      }
+    default:
+      return {
+        counterBadgeClass: 'text-cyan-400 bg-cyan-400/10',
+        borderClass: 'border-cyan-900/50',
+      }
+  }
+}
+
+function ChunkGroupItem({ messages, chunkType }: { messages: RawMessage[]; chunkType: ChunkType }) {
   const [open, setOpen] = useState(false)
   const first = messages[0]
   const last = messages[messages.length - 1]
+  const chunkStyle = getChunkStyle(chunkType)
 
   return (
     <Collapsible.Root open={open} onOpenChange={setOpen}>
@@ -193,20 +221,20 @@ function ChunkGroupItem({ messages }: { messages: RawMessage[] }) {
             <span className="px-1 py-0.5 rounded text-[10px] font-semibold text-purple-400 bg-purple-400/10">
               NOTIF
             </span>
-            <span className="px-1 py-0.5 rounded text-[10px] font-semibold text-cyan-400 bg-cyan-400/10">
+            <span className={`px-1 py-0.5 rounded text-[10px] font-semibold ${chunkStyle.counterBadgeClass}`}>
               x{messages.length}
             </span>
             <span className="text-gray-500 text-[10px] flex-shrink-0">
               {first.timestamp.toLocaleTimeString()} - {last.timestamp.toLocaleTimeString()}
             </span>
             <span className="text-gray-400 truncate flex-1">
-              session/update: agent_message_chunk
+              {`session/update: ${chunkType}`}
             </span>
           </div>
         </button>
       </Collapsible.Trigger>
       <Collapsible.Content>
-        <div className="ml-5 border-l-2 border-cyan-900/50 space-y-0.5 py-1">
+        <div className={`ml-5 border-l-2 ${chunkStyle.borderClass} space-y-0.5 py-1`}>
           {messages.map((msg) => (
             <MessageItem key={msg.id} message={msg} />
           ))}

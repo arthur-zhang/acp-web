@@ -10,6 +10,7 @@ export default function App() {
     chatMessages,
     agentState,
     sendPrompt,
+    interrupt,
     clearMessages,
     respondToPermission,
     respondToAskUserQuestion,
@@ -27,6 +28,7 @@ export default function App() {
           onSendPrompt={sendPrompt}
           onRespondPermission={respondToPermission}
           onRespondAskUserQuestion={respondToAskUserQuestion}
+          onInterrupt={interrupt}
         />
       </div>
 
