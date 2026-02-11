@@ -64,4 +64,16 @@ export interface ChatMessage {
   permissionRequest?: PermissionRequest
 }
 
+export interface ModeOption {
+  id: string
+  name: string
+  description?: string
+}
+
+export interface ModelOption {
+  id: string
+  name: string
+  description?: string
+}
+
 export type SessionUpdate = SessionNotification

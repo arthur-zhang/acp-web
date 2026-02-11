@@ -4,11 +4,28 @@ import type {
   PromptRequest,
   SessionNotification,
   ContentBlock,
-  CancelNotification
+  CancelNotification,
+  SetSessionModeRequest,
+  SetSessionModelRequest
 } from '@agentclientprotocol/sdk'
-import type { ConnectionStatus, RawMessage, ChatMessage, AgentState, ToolCall, PermissionOption } from '../types'
+import type { ConnectionStatus, RawMessage, ChatMessage, AgentState, ToolCall, PermissionOption, ModeOption, ModelOption } from '../types'
 
 const WS_URL = 'ws://127.0.0.1:3000/ws'
+
+const FALLBACK_MODES: ModeOption[] = [
+  { id: 'default', name: 'Default' },
+  { id: 'accept_edits', name: 'Accept Edits' },
+  { id: 'plan_mode', name: 'Plan Mode' },
+  { id: 'dont_ask', name: "Don't Ask" },
+  { id: 'bypass_permissions', name: 'Bypass Permissions' },
+]
+
+const FALLBACK_MODELS: ModelOption[] = [
+  { id: 'default', name: 'Default (recommended)' },
+  { id: 'opus', name: 'Opus' },
+  { id: 'opus_1m', name: 'Opus (1M context)' },
+  { id: 'haiku', name: 'Haiku' },
+]
 
 let requestId = 1
 
@@ -77,6 +94,76 @@ function createJsonRpcRequest(method: string, params: unknown) {
   }
 }
 
+function readModeState(value: unknown): { options: ModeOption[]; currentModeId: string } | null {
+  if (!value || typeof value !== 'object') return null
+
+  const state = value as {
+    currentModeId?: unknown
+    availableModes?: unknown
+  }
+
+  if (typeof state.currentModeId !== 'string') return null
+
+  const options: ModeOption[] = []
+  if (Array.isArray(state.availableModes)) {
+    for (const item of state.availableModes) {
+      if (!item || typeof item !== 'object') continue
+      const mode = item as { id?: unknown; name?: unknown; description?: unknown }
+      if (typeof mode.id !== 'string' || typeof mode.name !== 'string') continue
+
+      const option: ModeOption = {
+        id: mode.id,
+        name: mode.name,
+      }
+
+      if (typeof mode.description === 'string') {
+        option.description = mode.description
+      }
+
+      options.push(option)
+    }
+  }
+
+  if (options.length === 0) return null
+
+  return { options, currentModeId: state.currentModeId }
+}
+
+function readModelState(value: unknown): { options: ModelOption[]; currentModelId: string } | null {
+  if (!value || typeof value !== 'object') return null
+
+  const state = value as {
+    currentModelId?: unknown
+    availableModels?: unknown
+  }
+
+  if (typeof state.currentModelId !== 'string') return null
+
+  const options: ModelOption[] = []
+  if (Array.isArray(state.availableModels)) {
+    for (const item of state.availableModels) {
+      if (!item || typeof item !== 'object') continue
+      const model = item as { modelId?: unknown; name?: unknown; description?: unknown }
+      if (typeof model.modelId !== 'string' || typeof model.name !== 'string') continue
+
+      const option: ModelOption = {
+        id: model.modelId,
+        name: model.name,
+      }
+
+      if (typeof model.description === 'string') {
+        option.description = model.description
+      }
+
+      options.push(option)
+    }
+  }
+
+  if (options.length === 0) return null
+
+  return { options, currentModelId: state.currentModelId }
+}
+
 type StreamingRole = 'assistant' | 'thought' | null
 
 export function useWebSocket() {
@@ -86,6 +173,10 @@ export function useWebSocket() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [agentState, setAgentState] = useState<AgentState>('idle')
   const [initialized, setInitialized] = useState(false)
+  const [modeOptions, setModeOptions] = useState<ModeOption[]>(FALLBACK_MODES)
+  const [selectedModeId, setSelectedModeId] = useState<string>(FALLBACK_MODES[0].id)
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>(FALLBACK_MODELS)
+  const [selectedModelId, setSelectedModelId] = useState<string>(FALLBACK_MODELS.find(option => option.id === 'opus')?.id ?? FALLBACK_MODELS[0].id)
   const wsRef = useRef<WebSocket | null>(null)
   const initRequestIdRef = useRef<number | null>(null)
   const streamingRoleRef = useRef<StreamingRole>(null)
@@ -326,6 +417,13 @@ export function useWebSocket() {
       const update = params.update as Record<string, unknown>
       const sessionUpdate = update.sessionUpdate as string | undefined
 
+      if (sessionUpdate === 'current_mode_update') {
+        const currentModeId = update.currentModeId
+        if (typeof currentModeId === 'string') {
+          setSelectedModeId(currentModeId)
+        }
+      }
+
       const upsertToolCall = (toolUpdate: Record<string, unknown>) => {
         setAgentState('tool_calling')
         // End text streaming but preserve tool call groups.
@@ -509,6 +607,18 @@ export function useWebSocket() {
           // Server-to-client JSON-RPC request (needs a response)
           handleServerRequest(data.id, data.method, data.params)
         } else if (data.result) {
+          const modeState = readModeState(data.result.modes)
+          if (modeState) {
+            setModeOptions(modeState.options)
+            setSelectedModeId(modeState.currentModeId)
+          }
+
+          const modelState = readModelState(data.result.models)
+          if (modelState) {
+            setModelOptions(modelState.options)
+            setSelectedModelId(modelState.currentModelId)
+          }
+
           // Handle initialize response
           if (data.id === initRequestIdRef.current) {
             initRequestIdRef.current = null
@@ -580,6 +690,34 @@ export function useWebSocket() {
     wsRef.current.send(JSON.stringify(request))
   }, [sessionId, addRawMessage, addChatMessage, endStreaming])
 
+  const setMode = useCallback((modeId: string) => {
+    setSelectedModeId(modeId)
+
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || !sessionId) return
+
+    const request = createJsonRpcRequest('session/set_mode', {
+      sessionId,
+      modeId,
+    } satisfies SetSessionModeRequest)
+
+    addRawMessage('sent', request)
+    wsRef.current.send(JSON.stringify(request))
+  }, [sessionId, addRawMessage])
+
+  const setModel = useCallback((modelId: string) => {
+    setSelectedModelId(modelId)
+
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || !sessionId) return
+
+    const request = createJsonRpcRequest('session/set_model', {
+      sessionId,
+      modelId,
+    } satisfies SetSessionModelRequest)
+
+    addRawMessage('sent', request)
+    wsRef.current.send(JSON.stringify(request))
+  }, [sessionId, addRawMessage])
+
   const interrupt = useCallback(() => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || !sessionId) return
 
@@ -637,10 +775,16 @@ export function useWebSocket() {
     rawMessages,
     chatMessages,
     agentState,
+    modeOptions,
+    selectedModeId,
+    modelOptions,
+    selectedModelId,
     connect,
     disconnect,
     createSession,
     sendPrompt,
+    setMode,
+    setModel,
     interrupt,
     clearMessages,
     respondToPermission,

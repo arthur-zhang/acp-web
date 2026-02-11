@@ -9,7 +9,13 @@ export default function App() {
     rawMessages,
     chatMessages,
     agentState,
+    modeOptions,
+    selectedModeId,
+    modelOptions,
+    selectedModelId,
     sendPrompt,
+    setMode,
+    setModel,
     interrupt,
     clearMessages,
     respondToPermission,
@@ -26,6 +32,12 @@ export default function App() {
           messages={chatMessages}
           agentState={agentState}
           onSendPrompt={sendPrompt}
+          modeOptions={modeOptions}
+          selectedModeId={selectedModeId}
+          modelOptions={modelOptions}
+          selectedModelId={selectedModelId}
+          onSelectMode={setMode}
+          onSelectModel={setModel}
           onRespondPermission={respondToPermission}
           onRespondAskUserQuestion={respondToAskUserQuestion}
           onInterrupt={interrupt}
