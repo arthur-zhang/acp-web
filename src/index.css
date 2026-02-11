@@ -47,3 +47,63 @@ body {
   font-family: 'Geist Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
 }
 
+.processing-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+}
+
+.processing-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  width: 9px;
+  height: 9px;
+  gap: 0.5px;
+}
+
+.processing-grid-dot {
+  width: 2px;
+  height: 2px;
+  border-radius: 9999px;
+  background: rgb(212 212 216);
+  opacity: 0.2;
+  animation: processingGridPulse 0.92s ease-in-out infinite;
+}
+
+.processing-grid-dot--hidden {
+  opacity: 0;
+}
+
+.processing-grid-dot:nth-child(1),
+.processing-grid-dot:nth-child(4),
+.processing-grid-dot:nth-child(7) {
+  animation-delay: 0ms;
+}
+
+.processing-grid-dot:nth-child(2),
+.processing-grid-dot:nth-child(8) {
+  animation-delay: 150ms;
+}
+
+.processing-grid-dot:nth-child(3),
+.processing-grid-dot:nth-child(6),
+.processing-grid-dot:nth-child(9) {
+  animation-delay: 300ms;
+}
+
+@keyframes processingGridPulse {
+  0%,
+  65%,
+  100% {
+    opacity: 0.18;
+    transform: scale(0.92);
+  }
+
+  28% {
+    opacity: 0.95;
+    transform: scale(1.12);
+  }
+}

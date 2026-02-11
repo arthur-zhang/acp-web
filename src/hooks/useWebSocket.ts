@@ -8,7 +8,18 @@ import type {
   SetSessionModeRequest,
   SetSessionModelRequest
 } from '@agentclientprotocol/sdk'
-import type { ConnectionStatus, RawMessage, ChatMessage, AgentState, ToolCall, PermissionOption, ModeOption, ModelOption } from '../types'
+import type {
+  ConnectionStatus,
+  RawMessage,
+  ChatMessage,
+  AgentState,
+  ToolCall,
+  PermissionOption,
+  ModeOption,
+  ModelOption,
+  ChatRoundMetrics,
+  RoundUsage,
+} from '../types'
 
 const WS_URL = 'ws://127.0.0.1:3000/ws'
 
@@ -166,6 +177,83 @@ function readModelState(value: unknown): { options: ModelOption[]; currentModelI
 
 type StreamingRole = 'assistant' | 'thought' | null
 
+function parseNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string') {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return undefined
+}
+
+function readUsage(value: unknown): RoundUsage | undefined {
+  if (!value || typeof value !== 'object') return undefined
+
+  const usage = value as Record<string, unknown>
+  const inputTokens = parseNumber(usage.inputTokens ?? usage.input_tokens)
+  const outputTokens = parseNumber(usage.outputTokens ?? usage.output_tokens)
+  const cacheReadTokens = parseNumber(
+    usage.cacheReadInputTokens
+      ?? usage.cache_read_input_tokens
+      ?? usage.cacheReadTokens
+      ?? usage.cache_read_tokens,
+  )
+  const cacheWriteTokens = parseNumber(
+    usage.cacheCreationInputTokens
+      ?? usage.cache_creation_input_tokens
+      ?? usage.cacheWriteTokens
+      ?? usage.cache_write_tokens,
+  )
+  const costUsd = parseNumber(
+    usage.costUsd
+      ?? usage.costUSD
+      ?? usage.cost
+      ?? usage.totalCostUsd
+      ?? usage.total_cost_usd,
+  )
+
+  if (
+    inputTokens === undefined
+    && outputTokens === undefined
+    && cacheReadTokens === undefined
+    && cacheWriteTokens === undefined
+    && costUsd === undefined
+  ) {
+    return undefined
+  }
+
+  return {
+    ...(inputTokens !== undefined && { inputTokens }),
+    ...(outputTokens !== undefined && { outputTokens }),
+    ...(cacheReadTokens !== undefined && { cacheReadTokens }),
+    ...(cacheWriteTokens !== undefined && { cacheWriteTokens }),
+    ...(costUsd !== undefined && { costUsd }),
+  }
+}
+
+function readModelLabel(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined
+
+  const model = value as Record<string, unknown>
+  const modelName = typeof model.name === 'string' ? model.name : undefined
+  const provider = typeof model.providerName === 'string'
+    ? model.providerName
+    : typeof model.provider === 'string'
+      ? model.provider
+      : undefined
+
+  if (modelName && provider) return `${modelName} via ${provider}`
+  return modelName ?? provider
+}
+
+function mapStopReasonToStatus(stopReason: unknown): ChatRoundMetrics['status'] {
+  if (typeof stopReason !== 'string') return 'completed'
+  const value = stopReason.toLowerCase()
+  if (value.includes('cancel') || value.includes('interrupt')) return 'cancelled'
+  if (value.includes('error') || value.includes('fail')) return 'error'
+  return 'completed'
+}
+
 export function useWebSocket() {
   const [status, setStatus] = useState<ConnectionStatus>('disconnected')
   const [sessionId, setSessionId] = useState<string | null>(null)
@@ -177,11 +265,13 @@ export function useWebSocket() {
   const [selectedModeId, setSelectedModeId] = useState<string>(FALLBACK_MODES[0].id)
   const [modelOptions, setModelOptions] = useState<ModelOption[]>(FALLBACK_MODELS)
   const [selectedModelId, setSelectedModelId] = useState<string>(FALLBACK_MODELS.find(option => option.id === 'opus')?.id ?? FALLBACK_MODELS[0].id)
+  const [roundMetricsByPromptId, setRoundMetricsByPromptId] = useState<Record<string, ChatRoundMetrics>>({})
   const wsRef = useRef<WebSocket | null>(null)
   const initRequestIdRef = useRef<number | null>(null)
   const streamingRoleRef = useRef<StreamingRole>(null)
   const streamingMessageIdRef = useRef<string | null>(null)
   const toolCallGroupIdRef = useRef<string | null>(null)
+  const activePromptIdRef = useRef<string | null>(null)
 
   const addRawMessage = useCallback((direction: 'sent' | 'received', data: unknown) => {
     setRawMessages(prev => [...prev, {
@@ -237,6 +327,33 @@ export function useWebSocket() {
     streamingMessageIdRef.current = null
     toolCallGroupIdRef.current = null
     setAgentState('idle')
+  }, [])
+
+  const completeActiveRound = useCallback((status: ChatRoundMetrics['status'], result?: unknown) => {
+    const activePromptId = activePromptIdRef.current
+    if (!activePromptId) return
+
+    setRoundMetricsByPromptId(prev => {
+      const existing = prev[activePromptId]
+      if (!existing) return prev
+
+      const resultObj = result && typeof result === 'object' ? result as Record<string, unknown> : undefined
+      const usage = readUsage(resultObj?.usage)
+      const modelLabel = readModelLabel(resultObj?.model)
+
+      return {
+        ...prev,
+        [activePromptId]: {
+          ...existing,
+          status,
+          endedAt: Date.now(),
+          ...(usage && { usage: { ...(existing.usage ?? {}), ...usage } }),
+          ...(modelLabel && { modelLabel }),
+        },
+      }
+    })
+
+    activePromptIdRef.current = null
   }, [])
 
   const handleServerRequest = useCallback((id: number, method: string, params: Record<string, unknown>) => {
@@ -395,8 +512,8 @@ export function useWebSocket() {
       protocolVersion: 1,
       clientCapabilities: {
         fs: {
-          readTextFile: true,
-          writeTextFile: true,
+          readTextFile: false,
+          writeTextFile: false,
         },
         terminal: false,
       },
@@ -630,10 +747,12 @@ export function useWebSocket() {
           }
           if (data.result.stopReason) {
             endStreaming()
+            completeActiveRound(mapStopReasonToStatus(data.result.stopReason), data.result)
           }
         } else if (data.error) {
           addChatMessage('system', `Error: ${data.error.message}`)
           endStreaming()
+          completeActiveRound('error')
         } else if (data.method) {
           handleNotification(data.method, data.params)
         }
@@ -651,6 +770,8 @@ export function useWebSocket() {
     ws.onclose = () => {
       setStatus('disconnected')
       setSessionId(null)
+      setRoundMetricsByPromptId({})
+      activePromptIdRef.current = null
       addChatMessage('system', 'Disconnected')
       endStreaming()
     }
@@ -665,6 +786,9 @@ export function useWebSocket() {
   const createSession = useCallback(() => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
 
+    setRoundMetricsByPromptId({})
+    activePromptIdRef.current = null
+
     const request = createJsonRpcRequest('session/new', {
       cwd: '/Users/arthur/RustroverProjects/my-demo',
       mcpServers: [],
@@ -677,9 +801,20 @@ export function useWebSocket() {
   const sendPrompt = useCallback((text: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || !sessionId) return
 
-    addChatMessage('user', text)
+    const promptId = addChatMessage('user', text)
     endStreaming()
     setAgentState('thinking')
+    activePromptIdRef.current = promptId
+    const modelLabel = modelOptions.find(option => option.id === selectedModelId)?.name
+
+    setRoundMetricsByPromptId(prev => ({
+      ...prev,
+      [promptId]: {
+        startedAt: Date.now(),
+        status: 'processing',
+        ...(modelLabel && { modelLabel }),
+      },
+    }))
 
     const request = createJsonRpcRequest('session/prompt', {
       sessionId,
@@ -688,7 +823,14 @@ export function useWebSocket() {
 
     addRawMessage('sent', request)
     wsRef.current.send(JSON.stringify(request))
-  }, [sessionId, addRawMessage, addChatMessage, endStreaming])
+  }, [
+    sessionId,
+    addRawMessage,
+    addChatMessage,
+    endStreaming,
+    modelOptions,
+    selectedModelId,
+  ])
 
   const setMode = useCallback((modeId: string) => {
     setSelectedModeId(modeId)
@@ -733,11 +875,14 @@ export function useWebSocket() {
 
     addRawMessage('sent', notification)
     wsRef.current.send(JSON.stringify(notification))
-  }, [sessionId, addRawMessage, addChatMessage, cancelPendingPermissionRequests])
+    completeActiveRound('cancelled')
+  }, [sessionId, addRawMessage, addChatMessage, cancelPendingPermissionRequests, completeActiveRound])
 
   const clearMessages = useCallback(() => {
     setRawMessages([])
     setChatMessages([])
+    setRoundMetricsByPromptId({})
+    activePromptIdRef.current = null
     endStreaming()
   }, [endStreaming])
 
@@ -779,6 +924,7 @@ export function useWebSocket() {
     selectedModeId,
     modelOptions,
     selectedModelId,
+    roundMetricsByPromptId,
     connect,
     disconnect,
     createSession,

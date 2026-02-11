@@ -4,7 +4,6 @@ import { useWebSocket } from './hooks/useWebSocket'
 
 export default function App() {
   const {
-    status,
     sessionId,
     rawMessages,
     chatMessages,
@@ -13,6 +12,7 @@ export default function App() {
     selectedModeId,
     modelOptions,
     selectedModelId,
+    roundMetricsByPromptId,
     sendPrompt,
     setMode,
     setModel,
@@ -27,7 +27,6 @@ export default function App() {
       {/* Left Panel - Chat */}
       <div className="w-1/2 min-w-0">
         <ChatPanel
-          status={status}
           sessionId={sessionId}
           messages={chatMessages}
           agentState={agentState}
@@ -36,6 +35,7 @@ export default function App() {
           selectedModeId={selectedModeId}
           modelOptions={modelOptions}
           selectedModelId={selectedModelId}
+          roundMetricsByPromptId={roundMetricsByPromptId}
           onSelectMode={setMode}
           onSelectModel={setModel}
           onRespondPermission={respondToPermission}

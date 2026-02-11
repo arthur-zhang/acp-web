@@ -5,11 +5,16 @@ import { ArrowUp, Square, ChevronDown, Check, Plus } from 'lucide-react'
 import { MessageBubble } from './chat/MessageBubble'
 import { InteractionGroup } from './chat/InteractionGroup'
 import { ScrollToBottom } from './chat/ScrollToBottom'
-import { StatusBar } from './chat/StatusBar'
-import type { ConnectionStatus, ChatMessage, AgentState, ModeOption, ModelOption } from '../types'
+import type {
+  ChatMessage,
+  AgentState,
+  ModeOption,
+  ModelOption,
+  ChatRoundMetrics,
+  RoundUsage,
+} from '../types'
 
 interface ChatPanelProps {
-  status: ConnectionStatus
   sessionId: string | null
   messages: ChatMessage[]
   agentState: AgentState
@@ -17,6 +22,7 @@ interface ChatPanelProps {
   selectedModeId: string
   modelOptions: ModelOption[]
   selectedModelId: string
+  roundMetricsByPromptId: Record<string, ChatRoundMetrics>
   onSendPrompt: (text: string) => void
   onSelectMode: (modeId: string) => void
   onSelectModel: (modelId: string) => void
@@ -90,8 +96,99 @@ function buildDisplayItems(messages: ChatMessage[]): DisplayItem[] {
   return items
 }
 
+function formatDurationMs(durationMs: number): string {
+  if (durationMs < 1000) {
+    return `${Math.max(0.1, durationMs / 1000).toFixed(1)}s`
+  }
+
+  if (durationMs < 60_000) {
+    const seconds = durationMs / 1000
+    return seconds < 10 ? `${seconds.toFixed(1)}s` : `${Math.round(seconds)}s`
+  }
+
+  const minutes = Math.floor(durationMs / 60_000)
+  const seconds = Math.round((durationMs % 60_000) / 1000)
+  return `${minutes}m ${seconds}s`
+}
+
+function formatNumber(value?: number): string {
+  if (value === undefined) return '—'
+  return new Intl.NumberFormat('en-US').format(value)
+}
+
+function formatCostUsd(value?: number): string {
+  if (value === undefined) return '—'
+  return `$${value.toFixed(2)}`
+}
+
+function hasUsage(usage?: RoundUsage): boolean {
+  if (!usage) return false
+  return Object.values(usage).some(value => value !== undefined)
+}
+
+function RoundMetricsRow({ metrics }: { metrics?: ChatRoundMetrics }) {
+  const [elapsedMs, setElapsedMs] = useState<number>(0)
+
+  useEffect(() => {
+    if (!metrics) return
+
+    const refresh = () => {
+      const end = metrics.endedAt ?? Date.now()
+      setElapsedMs(Math.max(0, end - metrics.startedAt))
+    }
+
+    refresh()
+
+    if (metrics.status !== 'processing') return
+
+    const timer = window.setInterval(refresh, 100)
+    return () => window.clearInterval(timer)
+  }, [metrics])
+
+  if (!metrics) return null
+
+  const usage = metrics.usage
+  const showUsage = metrics.status !== 'processing' && hasUsage(usage)
+
+  return (
+    <div className="mt-1 pl-1">
+      <div
+        className="inline-flex items-center gap-2 text-xs text-gray-500 rounded px-1.5 py-0.5"
+      >
+        {metrics.status === 'processing' && (
+          <span className="processing-indicator" aria-label="processing">
+            <span className="processing-grid" aria-hidden="true">
+              <span className="processing-grid-dot" />
+              <span className="processing-grid-dot" />
+              <span className="processing-grid-dot" />
+              <span className="processing-grid-dot" />
+              <span className="processing-grid-dot processing-grid-dot--hidden" />
+              <span className="processing-grid-dot" />
+              <span className="processing-grid-dot" />
+              <span className="processing-grid-dot" />
+              <span className="processing-grid-dot" />
+            </span>
+          </span>
+        )}
+
+        <span className="text-gray-400">{formatDurationMs(elapsedMs)}</span>
+
+        {metrics.status !== 'processing' && showUsage && (
+          <>
+            <span className="text-gray-600">·</span>
+            <span>In {formatNumber(usage?.inputTokens)}</span>
+            <span>Out {formatNumber(usage?.outputTokens)}</span>
+            <span>Read {formatNumber(usage?.cacheReadTokens)}</span>
+            <span>Write {formatNumber(usage?.cacheWriteTokens)}</span>
+            <span>Cost {formatCostUsd(usage?.costUsd)}</span>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export function ChatPanel({
-  status,
   sessionId,
   messages,
   agentState,
@@ -99,6 +196,7 @@ export function ChatPanel({
   selectedModeId,
   modelOptions,
   selectedModelId,
+  roundMetricsByPromptId,
   onSendPrompt,
   onSelectMode,
   onSelectModel,
@@ -108,6 +206,7 @@ export function ChatPanel({
 }: ChatPanelProps) {
   const [input, setInput] = useState('')
   const [isAtBottom, setIsAtBottom] = useState(true)
+  const [isComposing, setIsComposing] = useState(false)
   const [modelMenuOpen, setModelMenuOpen] = useState(false)
   const [modelQuery, setModelQuery] = useState('')
   const isActive = agentState !== 'idle'
@@ -153,13 +252,18 @@ export function ChatPanel({
 
   const handleSend = () => {
     const trimmedInput = input.trim()
-    if (!trimmedInput || !sessionId) return
+    if (!trimmedInput || !sessionId || isComposing) return
 
     setInput('')
     onSendPrompt(trimmedInput)
   }
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    const nativeEvent = e.nativeEvent as { isComposing?: boolean; keyCode?: number }
+    if (isComposing || nativeEvent.isComposing || nativeEvent.keyCode === 229) {
+      return
+    }
+
     if (e.key === 'Enter' && !e.shiftKey && !isActive) {
       e.preventDefault()
       handleSend()
@@ -190,6 +294,11 @@ export function ChatPanel({
                 }
 
                 const shouldExpandGroup = index === displayItems.length - 1 && !item.isComplete
+                const shouldGroupMiddleMessages =
+                  item.middleMessages.length > 1
+                  || item.middleMessages.some(
+                    message => message.role === 'thought' || message.role === 'tool_call_group',
+                  )
 
                 return (
                   <div key={item.id} className="space-y-3">
@@ -199,7 +308,9 @@ export function ChatPanel({
                       onRespondAskUserQuestion={onRespondAskUserQuestion}
                     />
 
-                    {item.middleMessages.length > 0 && (
+                    <RoundMetricsRow metrics={roundMetricsByPromptId[item.prompt.id]} />
+
+                    {item.middleMessages.length > 0 && shouldGroupMiddleMessages && (
                       <InteractionGroup
                         messages={item.middleMessages}
                         isLatest={shouldExpandGroup}
@@ -207,6 +318,16 @@ export function ChatPanel({
                         onRespondAskUserQuestion={onRespondAskUserQuestion}
                       />
                     )}
+
+                    {item.middleMessages.length > 0 && !shouldGroupMiddleMessages &&
+                      item.middleMessages.map((middleMessage) => (
+                        <MessageBubble
+                          key={middleMessage.id}
+                          message={middleMessage}
+                          onRespondPermission={onRespondPermission}
+                          onRespondAskUserQuestion={onRespondAskUserQuestion}
+                        />
+                      ))}
 
                     {item.resultMessage && (
                       <MessageBubble
@@ -238,10 +359,12 @@ export function ChatPanel({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
+            onCompositionStart={() => setIsComposing(true)}
+            onCompositionEnd={() => setIsComposing(false)}
             placeholder={sessionId ? 'Add a follow up' : 'Connecting...'}
-            rows={6}
+            rows={5}
             disabled={!sessionId}
-            className="min-h-[160px] w-full bg-transparent rounded-t-2xl px-4 pt-4 pb-2 text-sm leading-6
+            className="min-h-[140px] w-full bg-transparent rounded-t-2xl px-4 pt-3.5 pb-2 text-sm leading-6
               resize-none focus:outline-none placeholder:text-gray-500
               disabled:opacity-50 transition-colors"
           />
@@ -249,15 +372,14 @@ export function ChatPanel({
           <div className="flex items-center justify-between gap-2 px-3 pb-3">
             <div className="flex items-center gap-2">
               <button
-                className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-gray-800/80 bg-gray-900/20 text-gray-400
+                className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-gray-800/80 bg-gray-900/20 text-gray-400
                   hover:bg-gray-800/30 transition-colors"
                 title="Add context"
                 type="button"
               >
                 <Plus className="h-4 w-4" />
               </button>
-            </div>
-            <div className="flex items-center gap-2">
+
               <DropdownMenu.Root>
                 <DropdownMenu.Trigger asChild>
                   <button
@@ -273,7 +395,7 @@ export function ChatPanel({
                   </button>
                 </DropdownMenu.Trigger>
                 <DropdownMenu.Content
-                  align="end"
+                  align="start"
                   sideOffset={8}
                   className="z-50 min-w-[260px] rounded-xl border border-gray-800/80 bg-gray-900/95 p-1.5 shadow-xl"
                 >
@@ -321,7 +443,7 @@ export function ChatPanel({
                   </button>
                 </DropdownMenu.Trigger>
                 <DropdownMenu.Content
-                  align="end"
+                  align="start"
                   sideOffset={8}
                   className="z-50 w-[360px] rounded-xl border border-gray-800/80 bg-gray-900/95 shadow-xl"
                   onCloseAutoFocus={(event) => event.preventDefault()}
@@ -370,21 +492,24 @@ export function ChatPanel({
                 </DropdownMenu.Content>
               </DropdownMenu.Root>
 
+            </div>
+
+            <div className="flex items-center gap-2">
               <button
                 onClick={isActive ? onInterrupt : handleSend}
                 disabled={!sessionId || (!isActive && !input.trim())}
                 title={isActive ? 'Interrupt' : 'Send'}
                 type="button"
-                className={`inline-flex items-center justify-center gap-2 h-9 rounded-lg border transition-colors ${
+                className={`inline-flex items-center justify-center gap-2 h-8 rounded-lg border transition-colors ${
                   isActive
-                    ? 'px-3 border-red-400/60 text-red-200 bg-red-500/10 hover:bg-red-500/20'
-                    : 'w-9 border-gray-800/80 text-blue-300 bg-blue-500/10 hover:bg-blue-500/20 disabled:border-gray-800/80 disabled:text-gray-600 disabled:bg-transparent'
+                    ? 'px-2.5 border-red-400/60 text-red-200 bg-red-500/10 hover:bg-red-500/20'
+                    : 'w-8 border-gray-800/80 text-blue-300 bg-blue-500/10 hover:bg-blue-500/20 disabled:border-gray-800/80 disabled:text-gray-600 disabled:bg-transparent'
                 }`}
               >
                 {isActive ? (
                   <>
                     <Square className="w-4 h-4 fill-current" />
-                    <span className="text-sm">Interrupt</span>
+                    <span className="text-[13px]">Interrupt</span>
                   </>
                 ) : (
                   <ArrowUp className="w-4 h-4" />
@@ -395,12 +520,6 @@ export function ChatPanel({
         </div>
       </div>
 
-      {/* Status bar */}
-      <StatusBar
-        agentState={agentState}
-        connectionStatus={status}
-        sessionId={sessionId}
-      />
     </div>
   )
 }

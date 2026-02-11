@@ -64,6 +64,22 @@ export interface ChatMessage {
   permissionRequest?: PermissionRequest
 }
 
+export interface RoundUsage {
+  inputTokens?: number
+  outputTokens?: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  costUsd?: number
+}
+
+export interface ChatRoundMetrics {
+  startedAt: number
+  endedAt?: number
+  status: 'processing' | 'completed' | 'cancelled' | 'error'
+  modelLabel?: string
+  usage?: RoundUsage
+}
+
 export interface ModeOption {
   id: string
   name: string
