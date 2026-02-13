@@ -560,6 +560,8 @@ export function useWebSocket() {
         const kind = typeof toolUpdate.kind === 'string' ? toolUpdate.kind : undefined
         const contentText = extractContentText(toolUpdate.content)
         const locations = toolUpdate.locations
+        const rawInput = toolUpdate.rawInput as Record<string, unknown> | undefined
+        const promptText = typeof rawInput?.prompt === 'string' ? rawInput.prompt : undefined
 
         // Extract parentToolCallId and toolName from _meta.claudeCode
         const meta = toolUpdate._meta as Record<string, unknown> | undefined
@@ -623,6 +625,7 @@ export function useWebSocket() {
                   ...(title && { title }),
                   ...(kind && { kind }),
                   ...(toolName && { toolName }),
+                  ...(promptText && { promptText }),
                   ...(contentText && { content: contentText }),
                   ...(locations !== undefined && { locations }),
                 })),
@@ -636,6 +639,7 @@ export function useWebSocket() {
             status: status || 'running',
             ...(kind && { kind }),
             ...(contentText && { content: contentText }),
+            ...(promptText && { promptText }),
             ...(locations !== undefined && { locations }),
             ...(toolName && { toolName }),
             ...(parentToolCallId && { parentToolCallId }),

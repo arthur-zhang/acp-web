@@ -17,6 +17,7 @@ export interface ToolCall {
   status: 'running' | 'completed' | 'error'
   kind?: string
   content?: string
+  promptText?: string
   locations?: unknown
   toolName?: string
   parentToolCallId?: string
