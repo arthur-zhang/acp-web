@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import type {
   NewSessionRequest,
   PromptRequest,
+  ResumeSessionRequest,
   SessionNotification,
   ContentBlock,
   CancelNotification,
@@ -22,6 +23,11 @@ import type {
 } from '../types'
 
 const WS_URL = 'ws://127.0.0.1:3000/ws'
+const DEFAULT_CWD = '/Users/arthur/RustroverProjects/my-demo'
+const LAST_SESSION_ID_STORAGE_KEY = 'acp_web:last_session_id'
+const RECENT_SESSION_IDS_STORAGE_KEY = 'acp_web:recent_session_ids'
+const AUTO_NEW_SESSION_STORAGE_KEY = 'acp_web:auto_new_session_enabled'
+const MAX_RECENT_SESSION_IDS = 5
 
 const FALLBACK_MODES: ModeOption[] = [
   { id: 'default', name: 'Default' },
@@ -39,6 +45,73 @@ const FALLBACK_MODELS: ModelOption[] = [
 ]
 
 let requestId = 1
+
+function readStoredAutoNewSessionEnabled(): boolean {
+  if (typeof window === 'undefined') return true
+
+  try {
+    const value = window.localStorage.getItem(AUTO_NEW_SESSION_STORAGE_KEY)
+    if (value === null) return true
+    return value === '1'
+  } catch {
+    return true
+  }
+}
+
+function persistAutoNewSessionEnabled(value: boolean) {
+  if (typeof window === 'undefined') return
+
+  try {
+    window.localStorage.setItem(AUTO_NEW_SESSION_STORAGE_KEY, value ? '1' : '0')
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function readStoredSessionIds(): string[] {
+  if (typeof window === 'undefined') return []
+
+  try {
+    const rawValue = window.localStorage.getItem(RECENT_SESSION_IDS_STORAGE_KEY)
+    if (!rawValue) return []
+
+    const parsed = JSON.parse(rawValue)
+    if (!Array.isArray(parsed)) return []
+
+    const uniqueIds = Array.from(new Set(
+      parsed
+        .filter((value): value is string => typeof value === 'string')
+        .map(value => value.trim())
+        .filter(Boolean),
+    ))
+
+    return uniqueIds.slice(0, MAX_RECENT_SESSION_IDS)
+  } catch {
+    return []
+  }
+}
+
+function persistSessionId(value: string): string[] {
+  const sessionValue = value.trim()
+  if (!sessionValue) return readStoredSessionIds()
+
+  const existingSessionIds = readStoredSessionIds()
+  const nextSessionIds = [
+    sessionValue,
+    ...existingSessionIds.filter(sessionId => sessionId !== sessionValue),
+  ].slice(0, MAX_RECENT_SESSION_IDS)
+
+  if (typeof window === 'undefined') return nextSessionIds
+
+  try {
+    window.localStorage.setItem(LAST_SESSION_ID_STORAGE_KEY, sessionValue)
+    window.localStorage.setItem(RECENT_SESSION_IDS_STORAGE_KEY, JSON.stringify(nextSessionIds))
+  } catch {
+    // Ignore storage failures.
+  }
+
+  return nextSessionIds
+}
 
 /** Map ACP SDK status to our display status */
 function mapToolCallStatus(status: string): ToolCall['status'] {
@@ -265,13 +338,18 @@ export function useWebSocket() {
   const [selectedModeId, setSelectedModeId] = useState<string>(FALLBACK_MODES[0].id)
   const [modelOptions, setModelOptions] = useState<ModelOption[]>(FALLBACK_MODELS)
   const [selectedModelId, setSelectedModelId] = useState<string>(FALLBACK_MODELS.find(option => option.id === 'opus')?.id ?? FALLBACK_MODELS[0].id)
+  const [autoNewSessionEnabled, setAutoNewSessionEnabled] = useState<boolean>(() => readStoredAutoNewSessionEnabled())
+  const [recentSessionIds, setRecentSessionIds] = useState<string[]>(() => readStoredSessionIds())
   const [roundMetricsByPromptId, setRoundMetricsByPromptId] = useState<Record<string, ChatRoundMetrics>>({})
   const wsRef = useRef<WebSocket | null>(null)
   const initRequestIdRef = useRef<number | null>(null)
+  const resumeRequestMapRef = useRef<Map<number, { sessionId: string; auto: boolean }>>(new Map())
+  const autoSessionCreatedRef = useRef(false)
   const streamingRoleRef = useRef<StreamingRole>(null)
   const streamingMessageIdRef = useRef<string | null>(null)
   const toolCallGroupIdRef = useRef<string | null>(null)
   const activePromptIdRef = useRef<string | null>(null)
+  const activePromptRequestIdRef = useRef<number | null>(null)
 
   const addRawMessage = useCallback((direction: 'sent' | 'received', data: unknown) => {
     setRawMessages(prev => [...prev, {
@@ -354,6 +432,7 @@ export function useWebSocket() {
     })
 
     activePromptIdRef.current = null
+    activePromptRequestIdRef.current = null
   }, [])
 
   const handleServerRequest = useCallback((id: number, method: string, params: Record<string, unknown>) => {
@@ -728,6 +807,10 @@ export function useWebSocket() {
           // Server-to-client JSON-RPC request (needs a response)
           handleServerRequest(data.id, data.method, data.params)
         } else if (data.result) {
+          const resumeMeta = typeof data.id === 'number'
+            ? resumeRequestMapRef.current.get(data.id)
+            : undefined
+
           const modeState = readModeState(data.result.modes)
           if (modeState) {
             setModeOptions(modeState.options)
@@ -740,6 +823,14 @@ export function useWebSocket() {
             setSelectedModelId(modelState.currentModelId)
           }
 
+          if (resumeMeta) {
+            resumeRequestMapRef.current.delete(data.id)
+            setSessionId(resumeMeta.sessionId)
+            setRecentSessionIds(persistSessionId(resumeMeta.sessionId))
+            addChatMessage('system', `Session resumed (${resumeMeta.sessionId})`)
+            return
+          }
+
           // Handle initialize response
           if (data.id === initRequestIdRef.current) {
             initRequestIdRef.current = null
@@ -747,6 +838,7 @@ export function useWebSocket() {
             addChatMessage('system', `Initialized (agent: ${data.result.agentInfo?.name || 'unknown'})`)
           } else if (data.result.sessionId) {
             setSessionId(data.result.sessionId)
+            setRecentSessionIds(persistSessionId(data.result.sessionId))
             addChatMessage('system', 'Session ready')
           }
           if (data.result.stopReason) {
@@ -754,7 +846,32 @@ export function useWebSocket() {
             completeActiveRound(mapStopReasonToStatus(data.result.stopReason), data.result)
           }
         } else if (data.error) {
+          const resumeMeta = typeof data.id === 'number'
+            ? resumeRequestMapRef.current.get(data.id)
+            : undefined
+
+          if (resumeMeta) {
+            resumeRequestMapRef.current.delete(data.id)
+            addChatMessage('system', `Resume failed: ${data.error.message}`)
+
+            if (resumeMeta.auto && wsRef.current?.readyState === WebSocket.OPEN) {
+              const fallbackRequest = createJsonRpcRequest('session/new', {
+                cwd: DEFAULT_CWD,
+                mcpServers: [],
+              } satisfies NewSessionRequest)
+              addRawMessage('sent', fallbackRequest)
+              wsRef.current.send(JSON.stringify(fallbackRequest))
+            }
+            return
+          }
+
           addChatMessage('system', `Error: ${data.error.message}`)
+          const isActivePromptError = typeof data.id === 'number' && data.id === activePromptRequestIdRef.current
+          if (isActivePromptError) {
+            endStreaming()
+            completeActiveRound('error', { error: data.error })
+            return
+          }
           endStreaming()
         } else if (data.method) {
           handleNotification(data.method, data.params)
@@ -775,6 +892,9 @@ export function useWebSocket() {
       setSessionId(null)
       setRoundMetricsByPromptId({})
       activePromptIdRef.current = null
+      activePromptRequestIdRef.current = null
+      resumeRequestMapRef.current.clear()
+      autoSessionCreatedRef.current = false
       addChatMessage('system', 'Disconnected')
       endStreaming()
     }
@@ -789,17 +909,53 @@ export function useWebSocket() {
   const createSession = useCallback(() => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
 
+    setSessionId(null)
     setRoundMetricsByPromptId({})
     activePromptIdRef.current = null
 
     const request = createJsonRpcRequest('session/new', {
-      cwd: '/Users/arthur/RustroverProjects/my-demo',
+      cwd: DEFAULT_CWD,
       mcpServers: [],
     } satisfies NewSessionRequest)
 
     addRawMessage('sent', request)
     wsRef.current.send(JSON.stringify(request))
   }, [addRawMessage])
+
+  const resumeSession = useCallback((targetSessionId: string, auto = false) => {
+    const resumeTarget = targetSessionId.trim()
+    if (!resumeTarget) return
+
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      if (!auto) {
+        addChatMessage('system', 'Cannot resume: not connected')
+      }
+      return
+    }
+
+    setRoundMetricsByPromptId({})
+    activePromptIdRef.current = null
+    setSessionId(null)
+
+    if (!auto) {
+      setChatMessages([])
+      setRawMessages([])
+    }
+
+    const request = createJsonRpcRequest('session/resume', {
+      sessionId: resumeTarget,
+      cwd: DEFAULT_CWD,
+      mcpServers: [],
+    } satisfies ResumeSessionRequest)
+
+    resumeRequestMapRef.current.set(request.id, {
+      sessionId: resumeTarget,
+      auto,
+    })
+
+    addRawMessage('sent', request)
+    wsRef.current.send(JSON.stringify(request))
+  }, [addRawMessage, addChatMessage])
 
   const sendPrompt = useCallback((text: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || !sessionId) return
@@ -824,6 +980,7 @@ export function useWebSocket() {
       prompt: [{ type: 'text', text }],
     } satisfies PromptRequest)
 
+    activePromptRequestIdRef.current = request.id
     addRawMessage('sent', request)
     wsRef.current.send(JSON.stringify(request))
   }, [
@@ -885,8 +1042,19 @@ export function useWebSocket() {
     setChatMessages([])
     setRoundMetricsByPromptId({})
     activePromptIdRef.current = null
+    activePromptRequestIdRef.current = null
+    resumeRequestMapRef.current.clear()
     endStreaming()
   }, [endStreaming])
+
+  const setAutoNewSession = useCallback((value: boolean) => {
+    setAutoNewSessionEnabled(value)
+    persistAutoNewSessionEnabled(value)
+
+    if (!value) {
+      autoSessionCreatedRef.current = false
+    }
+  }, [])
 
   // Auto-connect on mount
   const autoConnectRef = useRef(false)
@@ -897,23 +1065,24 @@ export function useWebSocket() {
     }
   }, [connect])
 
-  // Auto-initialize once connected
-  const autoInitRef = useRef(false)
+  // Auto-initialize once connected (only when auto-new-session is enabled)
   useEffect(() => {
-    if (status === 'connected' && !initialized && !autoInitRef.current) {
-      autoInitRef.current = true
+    if (!autoNewSessionEnabled) return
+
+    if (status === 'connected' && !initialized && initRequestIdRef.current === null) {
       sendInitialize()
     }
-  }, [status, initialized, sendInitialize])
+  }, [status, initialized, sendInitialize, autoNewSessionEnabled])
 
-  // Auto-create session once initialized
-  const autoSessionRef = useRef(false)
+  // Auto-bootstrap session once initialized (controlled by auto-new-session switch)
   useEffect(() => {
-    if (status === 'connected' && initialized && !sessionId && !autoSessionRef.current) {
-      autoSessionRef.current = true
+    if (!autoNewSessionEnabled) return
+
+    if (status === 'connected' && initialized && !sessionId && !autoSessionCreatedRef.current) {
+      autoSessionCreatedRef.current = true
       createSession()
     }
-  }, [status, initialized, sessionId, createSession])
+  }, [status, initialized, sessionId, createSession, autoNewSessionEnabled])
 
   return {
     status,
@@ -926,10 +1095,15 @@ export function useWebSocket() {
     selectedModeId,
     modelOptions,
     selectedModelId,
+    autoNewSessionEnabled,
+    recentSessionIds,
     roundMetricsByPromptId,
     connect,
     disconnect,
+    initialize: sendInitialize,
     createSession,
+    resumeSession,
+    setAutoNewSession,
     sendPrompt,
     setMode,
     setModel,

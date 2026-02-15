@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import * as ScrollArea from '@radix-ui/react-scroll-area'
 import * as Collapsible from '@radix-ui/react-collapsible'
-import { ArrowUpRight, ArrowDownLeft, ChevronRight, Trash2 } from 'lucide-react'
-import type { RawMessage } from '../types'
+import { ArrowUpRight, ArrowDownLeft, ChevronRight, Plug, RotateCcw, Trash2, Unplug } from 'lucide-react'
+import type { ConnectionStatus, RawMessage } from '../types'
 
 type ChunkType = 'agent_message_chunk' | 'agent_thought_chunk'
 
@@ -52,13 +52,62 @@ function groupMessages(messages: RawMessage[]): GroupedItem[] {
 }
 
 interface DebugPanelProps {
+  status: ConnectionStatus
+  initialized: boolean
+  sessionId: string | null
+  autoNewSessionEnabled: boolean
+  recentSessionIds: string[]
   messages: RawMessage[]
+  onConnect: () => void
+  onDisconnect: () => void
+  onInitialize: () => void
+  onCreateSession: () => void
+  onResumeSession: (sessionId: string) => void
+  onToggleAutoNewSession: (enabled: boolean) => void
   onClear: () => void
 }
 
-export function DebugPanel({ messages, onClear }: DebugPanelProps) {
+function getStatusStyles(status: ConnectionStatus): { label: string; className: string } {
+  switch (status) {
+    case 'connected':
+      return { label: 'Connected', className: 'text-emerald-300 bg-emerald-500/15 border-emerald-500/30' }
+    case 'connecting':
+      return { label: 'Connecting', className: 'text-amber-300 bg-amber-500/15 border-amber-500/30' }
+    case 'error':
+      return { label: 'Error', className: 'text-red-300 bg-red-500/15 border-red-500/30' }
+    default:
+      return { label: 'Disconnected', className: 'text-gray-300 bg-gray-700/30 border-gray-600/40' }
+  }
+}
+
+export function DebugPanel({
+  status,
+  initialized,
+  sessionId,
+  autoNewSessionEnabled,
+  recentSessionIds,
+  messages,
+  onConnect,
+  onDisconnect,
+  onInitialize,
+  onCreateSession,
+  onResumeSession,
+  onToggleAutoNewSession,
+  onClear,
+}: DebugPanelProps) {
   const viewportRef = useRef<HTMLDivElement>(null)
   const grouped = useMemo(() => groupMessages(messages), [messages])
+  const [resumePopoverOpen, setResumePopoverOpen] = useState(false)
+  const [resumeSessionInput, setResumeSessionInput] = useState('')
+  const resumeButtonRef = useRef<HTMLButtonElement>(null)
+  const resumePopoverRef = useRef<HTMLDivElement>(null)
+  const resumeInputRef = useRef<HTMLInputElement>(null)
+  const statusStyles = getStatusStyles(status)
+  const canConnect = status === 'disconnected' || status === 'error'
+  const canDisconnect = status === 'connected' || status === 'connecting'
+  const canInitialize = status === 'connected' && !initialized
+  const canStartSession = status === 'connected' && initialized
+  const canResume = status === 'connected' && initialized
 
   useEffect(() => {
     if (viewportRef.current) {
@@ -66,19 +115,239 @@ export function DebugPanel({ messages, onClear }: DebugPanelProps) {
     }
   }, [messages])
 
+  useEffect(() => {
+    if (!resumePopoverOpen) return
+
+    const focusTimer = window.setTimeout(() => {
+      resumeInputRef.current?.focus()
+      resumeInputRef.current?.select()
+    }, 0)
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node
+      if (resumePopoverRef.current?.contains(target)) return
+      if (resumeButtonRef.current?.contains(target)) return
+      setResumePopoverOpen(false)
+    }
+
+    const handleEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setResumePopoverOpen(false)
+      }
+    }
+
+    window.addEventListener('mousedown', handlePointerDown)
+    window.addEventListener('keydown', handleEscape)
+    return () => {
+      window.clearTimeout(focusTimer)
+      window.removeEventListener('mousedown', handlePointerDown)
+      window.removeEventListener('keydown', handleEscape)
+    }
+  }, [resumePopoverOpen])
+
+  const handleResume = () => {
+    const trimmed = resumeSessionInput.trim()
+    if (!trimmed) return
+    onResumeSession(trimmed)
+    setResumeSessionInput('')
+    setResumePopoverOpen(false)
+  }
+
+  const handleQuickResume = (targetSessionId: string) => {
+    const trimmed = targetSessionId.trim()
+    if (!trimmed) return
+    onResumeSession(trimmed)
+    setResumeSessionInput('')
+    setResumePopoverOpen(false)
+  }
+
+  const toggleResumePopover = () => {
+    if (!canResume) return
+    setResumePopoverOpen((prev) => {
+      const next = !prev
+      if (!prev) {
+        setResumeSessionInput(sessionId ?? recentSessionIds[0] ?? '')
+      }
+      return next
+    })
+  }
+
   return (
     <div className="flex flex-col h-full bg-gray-950">
       {/* Header */}
-      <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-gray-400">WebSocket Debug</h2>
-        <button
-          onClick={onClear}
-          className="p-1.5 text-gray-500 hover:text-gray-300 hover:bg-gray-800
-            rounded transition-colors"
-          aria-label="Clear messages"
-        >
-          <Trash2 className="w-4 h-4" />
-        </button>
+      <div className="px-4 py-3 border-b border-gray-800 space-y-2">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <h2 className="text-sm font-semibold text-gray-400">WebSocket Debug</h2>
+            <span className={`inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] ${statusStyles.className}`}>
+              {statusStyles.label}
+            </span>
+          </div>
+          <button
+            onClick={onClear}
+            className="p-1.5 text-gray-500 hover:text-gray-300 hover:bg-gray-800 rounded transition-colors"
+            aria-label="Clear messages"
+            title="Clear messages"
+            type="button"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <button
+            type="button"
+            onClick={() => onToggleAutoNewSession(!autoNewSessionEnabled)}
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-gray-700/80 bg-gray-900/35 px-2 text-[11px] text-gray-200
+              transition-colors hover:bg-gray-800/50"
+            title="Toggle automatic new session after initialization"
+          >
+            <span>Auto New Session</span>
+            <span
+              className={`inline-flex h-4 w-7 items-center rounded-full border transition-colors ${
+                autoNewSessionEnabled
+                  ? 'border-emerald-400/40 bg-emerald-500/30 justify-end'
+                  : 'border-gray-600/60 bg-gray-700/40 justify-start'
+              }`}
+            >
+              <span
+                className={`mx-0.5 h-2.5 w-2.5 rounded-full ${
+                  autoNewSessionEnabled ? 'bg-emerald-200' : 'bg-gray-300'
+                }`}
+              />
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={onConnect}
+            disabled={!canConnect}
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-gray-700/80 bg-gray-900/35 px-2 text-[11px] text-gray-200
+              transition-colors hover:bg-gray-800/50 disabled:opacity-45 disabled:hover:bg-gray-900/35"
+          >
+            <Plug className="h-3.5 w-3.5" />
+            Connect
+          </button>
+
+          <button
+            type="button"
+            onClick={onInitialize}
+            disabled={!canInitialize}
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-gray-700/80 bg-gray-900/35 px-2 text-[11px] text-gray-200
+              transition-colors hover:bg-gray-800/50 disabled:opacity-45 disabled:hover:bg-gray-900/35"
+          >
+            Initialize
+          </button>
+
+          <button
+            type="button"
+            onClick={onCreateSession}
+            disabled={!canStartSession}
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-gray-700/80 bg-gray-900/35 px-2 text-[11px] text-gray-200
+              transition-colors hover:bg-gray-800/50 disabled:opacity-45 disabled:hover:bg-gray-900/35"
+          >
+            New Session
+          </button>
+
+          <div className="relative">
+            <button
+              ref={resumeButtonRef}
+              type="button"
+              onClick={toggleResumePopover}
+              disabled={!canResume}
+              className="inline-flex h-7 items-center gap-1 rounded-md border border-gray-700/80 bg-gray-900/35 px-2 text-[11px] text-gray-200
+                transition-colors hover:bg-gray-800/50 disabled:opacity-45 disabled:hover:bg-gray-900/35"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              Resume
+            </button>
+
+            {resumePopoverOpen && (
+              <div
+                ref={resumePopoverRef}
+                className="absolute top-[calc(100%+8px)] left-0 z-50 w-[320px] rounded-xl border border-gray-800/90 bg-gray-900/95 p-2.5
+                  shadow-[0_12px_40px_rgba(0,0,0,0.45)]"
+              >
+                <div className="mb-1.5 text-[11px] text-gray-400">Resume session</div>
+                <input
+                  ref={resumeInputRef}
+                  value={resumeSessionInput}
+                  onChange={(event) => setResumeSessionInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      handleResume()
+                    }
+                  }}
+                  placeholder="Enter session ID"
+                  className="w-full rounded-md border border-gray-800/90 bg-gray-950/60 px-2.5 py-1.5 text-[12px] text-gray-200
+                    placeholder:text-gray-500 focus:border-blue-500 focus:outline-none"
+                />
+
+                <div className="mt-2 flex items-center justify-end gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setResumePopoverOpen(false)}
+                    className="rounded-md border border-gray-800/90 bg-gray-900/30 px-2 py-1 text-[11px] text-gray-300 transition-colors
+                      hover:bg-gray-800/40"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleResume}
+                    disabled={!resumeSessionInput.trim()}
+                    className="rounded-md border border-blue-500/40 bg-blue-500/15 px-2 py-1 text-[11px] text-blue-200 transition-colors
+                      hover:bg-blue-500/25 disabled:border-gray-800/90 disabled:bg-gray-900/30 disabled:text-gray-600"
+                  >
+                    Resume
+                  </button>
+                </div>
+
+                {recentSessionIds.length > 0 && (
+                  <div className="mt-2 border-t border-gray-800/70 pt-2">
+                    <div className="mb-1.5 text-[10px] uppercase tracking-wide text-gray-500">Recent</div>
+                    <div className="space-y-1">
+                      {recentSessionIds.map((recentSessionId) => (
+                        <button
+                          key={recentSessionId}
+                          type="button"
+                          onClick={() => handleQuickResume(recentSessionId)}
+                          className="flex w-full items-center justify-between gap-2 rounded-md border border-gray-800/70 bg-gray-900/30 px-2 py-1.5 text-left
+                            text-[11px] text-gray-300 transition-colors hover:bg-gray-800/40"
+                        >
+                          <span className="truncate font-mono">{recentSessionId}</span>
+                          {recentSessionId === sessionId && (
+                            <span className="rounded border border-blue-500/40 bg-blue-500/10 px-1.5 py-0.5 text-[10px] text-blue-200">
+                              Current
+                            </span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={onDisconnect}
+            disabled={!canDisconnect}
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-gray-700/80 bg-gray-900/35 px-2 text-[11px] text-gray-200
+              transition-colors hover:bg-gray-800/50 disabled:opacity-45 disabled:hover:bg-gray-900/35"
+          >
+            <Unplug className="h-3.5 w-3.5" />
+            Disconnect
+          </button>
+
+          {sessionId && (
+            <span className="ml-1 max-w-[260px] truncate rounded-md border border-gray-800/80 bg-gray-900/25 px-2 py-1 text-[10px] font-mono text-gray-500">
+              {sessionId}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Messages */}

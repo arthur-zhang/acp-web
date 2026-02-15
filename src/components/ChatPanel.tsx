@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, KeyboardEvent, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback, KeyboardEvent as ReactKeyboardEvent, useMemo } from 'react'
 import * as ScrollArea from '@radix-ui/react-scroll-area'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { ArrowUp, Square, ChevronDown, Check, Plus } from 'lucide-react'
@@ -258,7 +258,7 @@ export function ChatPanel({
     onSendPrompt(trimmedInput)
   }
 
-  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+  const handleKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     const nativeEvent = e.nativeEvent as { isComposing?: boolean; keyCode?: number }
     if (isComposing || nativeEvent.isComposing || nativeEvent.keyCode === 229) {
       return

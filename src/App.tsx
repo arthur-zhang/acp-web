@@ -4,6 +4,8 @@ import { useWebSocket } from './hooks/useWebSocket'
 
 export default function App() {
   const {
+    status,
+    initialized,
     sessionId,
     rawMessages,
     chatMessages,
@@ -12,7 +14,15 @@ export default function App() {
     selectedModeId,
     modelOptions,
     selectedModelId,
+    autoNewSessionEnabled,
+    recentSessionIds,
     roundMetricsByPromptId,
+    connect,
+    disconnect,
+    initialize,
+    createSession,
+    resumeSession,
+    setAutoNewSession,
     sendPrompt,
     setMode,
     setModel,
@@ -48,7 +58,21 @@ export default function App() {
 
       {/* Right Panel - Debug */}
       <div className="w-1/2 min-w-0">
-        <DebugPanel messages={rawMessages} onClear={clearMessages} />
+        <DebugPanel
+          status={status}
+          initialized={initialized}
+          sessionId={sessionId}
+          autoNewSessionEnabled={autoNewSessionEnabled}
+          recentSessionIds={recentSessionIds}
+          messages={rawMessages}
+          onConnect={connect}
+          onDisconnect={disconnect}
+          onInitialize={initialize}
+          onCreateSession={createSession}
+          onResumeSession={resumeSession}
+          onToggleAutoNewSession={setAutoNewSession}
+          onClear={clearMessages}
+        />
       </div>
     </div>
   )
