@@ -49,13 +49,14 @@ function buildDisplayItems(messages: ChatMessage[]): DisplayItem[] {
     | {
         prompt: ChatMessage
         responses: ChatMessage[]
+        trailingSingles: ChatMessage[]
       }
     | null = null
 
   const flushRound = () => {
     if (!activeRound) return
 
-    const { prompt, responses } = activeRound
+    const { prompt, responses, trailingSingles } = activeRound
     const lastMessage = responses[responses.length - 1]
     const hasFinalResult = lastMessage?.role === 'assistant'
     const resultMessage = hasFinalResult ? lastMessage : undefined
@@ -70,6 +71,10 @@ function buildDisplayItems(messages: ChatMessage[]): DisplayItem[] {
       isComplete: hasFinalResult,
     })
 
+    for (const message of trailingSingles) {
+      items.push({ type: 'single', message })
+    }
+
     activeRound = null
   }
 
@@ -79,6 +84,18 @@ function buildDisplayItems(messages: ChatMessage[]): DisplayItem[] {
       activeRound = {
         prompt: message,
         responses: [],
+        trailingSingles: [],
+      }
+      continue
+    }
+
+    // System messages should not be part of round responses, but they also should
+    // not break round grouping when they arrive interleaved during session load.
+    if (message.role === 'system') {
+      if (activeRound) {
+        activeRound.trailingSingles.push(message)
+      } else {
+        items.push({ type: 'single', message })
       }
       continue
     }
@@ -213,6 +230,14 @@ export function ChatPanel({
   const viewportRef = useRef<HTMLDivElement>(null)
 
   const displayItems = useMemo(() => buildDisplayItems(messages), [messages])
+  const latestRoundIndex = useMemo(() => {
+    for (let i = displayItems.length - 1; i >= 0; i -= 1) {
+      if (displayItems[i].type === 'round') {
+        return i
+      }
+    }
+    return -1
+  }, [displayItems])
 
   const selectedModeLabel = useMemo(() => {
     return modeOptions.find(option => option.id === selectedModeId)?.name ?? selectedModeId
@@ -294,8 +319,8 @@ export function ChatPanel({
                 }
 
                 const roundMetrics = roundMetricsByPromptId[item.prompt.id]
-                const isRoundComplete = Boolean(roundMetrics?.endedAt)
-                const shouldExpandGroup = index === displayItems.length - 1 && !isRoundComplete
+                const isRoundComplete = Boolean(roundMetrics?.endedAt) || item.isComplete
+                const shouldExpandGroup = index === latestRoundIndex && !isRoundComplete
                 const shouldGroupMiddleMessages =
                   item.middleMessages.length > 1
                   || item.middleMessages.some(

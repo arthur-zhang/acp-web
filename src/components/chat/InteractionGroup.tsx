@@ -327,9 +327,7 @@ export function InteractionGroup({
   const [open, setOpen] = useState(isLatest)
 
   useEffect(() => {
-    if (!isLatest) {
-      setOpen(false)
-    }
+    setOpen(isLatest)
   }, [isLatest])
 
   const summary = useMemo(() => {

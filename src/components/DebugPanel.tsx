@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import * as ScrollArea from '@radix-ui/react-scroll-area'
 import * as Collapsible from '@radix-ui/react-collapsible'
-import { ArrowUpRight, ArrowDownLeft, ChevronRight, Plug, RotateCcw, Trash2, Unplug } from 'lucide-react'
+import { ArrowUpRight, ArrowDownLeft, ChevronRight, FolderOpen, Plug, RotateCcw, Trash2, Unplug } from 'lucide-react'
 import type { ConnectionStatus, RawMessage } from '../types'
 
 type ChunkType = 'agent_message_chunk' | 'agent_thought_chunk'
@@ -57,11 +57,13 @@ interface DebugPanelProps {
   sessionId: string | null
   autoNewSessionEnabled: boolean
   recentSessionIds: string[]
+  isLoadingSession: boolean
   messages: RawMessage[]
   onConnect: () => void
   onDisconnect: () => void
   onInitialize: () => void
   onCreateSession: () => void
+  onLoadSession: (sessionId: string) => void
   onResumeSession: (sessionId: string) => void
   onToggleAutoNewSession: (enabled: boolean) => void
   onClear: () => void
@@ -86,11 +88,13 @@ export function DebugPanel({
   sessionId,
   autoNewSessionEnabled,
   recentSessionIds,
+  isLoadingSession,
   messages,
   onConnect,
   onDisconnect,
   onInitialize,
   onCreateSession,
+  onLoadSession,
   onResumeSession,
   onToggleAutoNewSession,
   onClear,
@@ -99,6 +103,11 @@ export function DebugPanel({
   const grouped = useMemo(() => groupMessages(messages), [messages])
   const [resumePopoverOpen, setResumePopoverOpen] = useState(false)
   const [resumeSessionInput, setResumeSessionInput] = useState('')
+  const [loadPopoverOpen, setLoadPopoverOpen] = useState(false)
+  const [loadSessionInput, setLoadSessionInput] = useState('')
+  const loadButtonRef = useRef<HTMLButtonElement>(null)
+  const loadPopoverRef = useRef<HTMLDivElement>(null)
+  const loadInputRef = useRef<HTMLInputElement>(null)
   const resumeButtonRef = useRef<HTMLButtonElement>(null)
   const resumePopoverRef = useRef<HTMLDivElement>(null)
   const resumeInputRef = useRef<HTMLInputElement>(null)
@@ -108,6 +117,7 @@ export function DebugPanel({
   const canInitialize = status === 'connected' && !initialized
   const canStartSession = status === 'connected' && initialized
   const canResume = status === 'connected' && initialized
+  const canLoad = status === 'connected' && initialized && !isLoadingSession
 
   useEffect(() => {
     if (viewportRef.current) {
@@ -145,6 +155,36 @@ export function DebugPanel({
     }
   }, [resumePopoverOpen])
 
+  useEffect(() => {
+    if (!loadPopoverOpen) return
+
+    const focusTimer = window.setTimeout(() => {
+      loadInputRef.current?.focus()
+      loadInputRef.current?.select()
+    }, 0)
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node
+      if (loadPopoverRef.current?.contains(target)) return
+      if (loadButtonRef.current?.contains(target)) return
+      setLoadPopoverOpen(false)
+    }
+
+    const handleEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setLoadPopoverOpen(false)
+      }
+    }
+
+    window.addEventListener('mousedown', handlePointerDown)
+    window.addEventListener('keydown', handleEscape)
+    return () => {
+      window.clearTimeout(focusTimer)
+      window.removeEventListener('mousedown', handlePointerDown)
+      window.removeEventListener('keydown', handleEscape)
+    }
+  }, [loadPopoverOpen])
+
   const handleResume = () => {
     const trimmed = resumeSessionInput.trim()
     if (!trimmed) return
@@ -167,6 +207,33 @@ export function DebugPanel({
       const next = !prev
       if (!prev) {
         setResumeSessionInput(sessionId ?? recentSessionIds[0] ?? '')
+      }
+      return next
+    })
+  }
+
+  const handleLoad = () => {
+    const trimmed = loadSessionInput.trim()
+    if (!trimmed) return
+    onLoadSession(trimmed)
+    setLoadSessionInput('')
+    setLoadPopoverOpen(false)
+  }
+
+  const handleQuickLoad = (targetSessionId: string) => {
+    const trimmed = targetSessionId.trim()
+    if (!trimmed) return
+    onLoadSession(trimmed)
+    setLoadSessionInput('')
+    setLoadPopoverOpen(false)
+  }
+
+  const toggleLoadPopover = () => {
+    if (!canLoad) return
+    setLoadPopoverOpen((prev) => {
+      const next = !prev
+      if (!prev) {
+        setLoadSessionInput(sessionId ?? recentSessionIds[0] ?? '')
       }
       return next
     })
@@ -248,6 +315,89 @@ export function DebugPanel({
           >
             New Session
           </button>
+
+          <div className="relative">
+            <button
+              ref={loadButtonRef}
+              type="button"
+              onClick={toggleLoadPopover}
+              disabled={!canLoad}
+              className="inline-flex h-7 items-center gap-1 rounded-md border border-gray-700/80 bg-gray-900/35 px-2 text-[11px] text-gray-200
+                transition-colors hover:bg-gray-800/50 disabled:opacity-45 disabled:hover:bg-gray-900/35"
+            >
+              <FolderOpen className="h-3.5 w-3.5" />
+              {isLoadingSession ? 'Loading...' : 'Load'}
+            </button>
+
+            {loadPopoverOpen && (
+              <div
+                ref={loadPopoverRef}
+                className="absolute top-[calc(100%+8px)] left-0 z-50 w-[320px] rounded-xl border border-gray-800/90 bg-gray-900/95 p-2.5
+                  shadow-[0_12px_40px_rgba(0,0,0,0.45)]"
+              >
+                <div className="mb-1.5 text-[11px] text-gray-400">Load session (replay history)</div>
+                <input
+                  ref={loadInputRef}
+                  value={loadSessionInput}
+                  onChange={(event) => setLoadSessionInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      handleLoad()
+                    }
+                  }}
+                  placeholder="Enter session ID"
+                  className="w-full rounded-md border border-gray-800/90 bg-gray-950/60 px-2.5 py-1.5 text-[12px] text-gray-200
+                    placeholder:text-gray-500 focus:border-blue-500 focus:outline-none"
+                />
+
+                <div className="mt-2 flex items-center justify-end gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setLoadPopoverOpen(false)}
+                    className="rounded-md border border-gray-800/90 bg-gray-900/30 px-2 py-1 text-[11px] text-gray-300 transition-colors
+                      hover:bg-gray-800/40"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleLoad}
+                    disabled={!loadSessionInput.trim() || isLoadingSession}
+                    className="rounded-md border border-blue-500/40 bg-blue-500/15 px-2 py-1 text-[11px] text-blue-200 transition-colors
+                      hover:bg-blue-500/25 disabled:border-gray-800/90 disabled:bg-gray-900/30 disabled:text-gray-600"
+                  >
+                    {isLoadingSession ? 'Loading...' : 'Load'}
+                  </button>
+                </div>
+
+                {recentSessionIds.length > 0 && (
+                  <div className="mt-2 border-t border-gray-800/70 pt-2">
+                    <div className="mb-1.5 text-[10px] uppercase tracking-wide text-gray-500">Recent</div>
+                    <div className="space-y-1">
+                      {recentSessionIds.map((recentSessionId) => (
+                        <button
+                          key={`load-${recentSessionId}`}
+                          type="button"
+                          onClick={() => handleQuickLoad(recentSessionId)}
+                          disabled={isLoadingSession}
+                          className="flex w-full items-center justify-between gap-2 rounded-md border border-gray-800/70 bg-gray-900/30 px-2 py-1.5 text-left
+                            text-[11px] text-gray-300 transition-colors hover:bg-gray-800/40 disabled:opacity-50 disabled:hover:bg-gray-900/30"
+                        >
+                          <span className="truncate font-mono">{recentSessionId}</span>
+                          {recentSessionId === sessionId && (
+                            <span className="rounded border border-blue-500/40 bg-blue-500/10 px-1.5 py-0.5 text-[10px] text-blue-200">
+                              Current
+                            </span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
 
           <div className="relative">
             <button

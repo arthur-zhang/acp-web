@@ -16,11 +16,13 @@ export default function App() {
     selectedModelId,
     autoNewSessionEnabled,
     recentSessionIds,
+    isLoadingSession,
     roundMetricsByPromptId,
     connect,
     disconnect,
     initialize,
     createSession,
+    loadSession,
     resumeSession,
     setAutoNewSession,
     sendPrompt,
@@ -64,11 +66,13 @@ export default function App() {
           sessionId={sessionId}
           autoNewSessionEnabled={autoNewSessionEnabled}
           recentSessionIds={recentSessionIds}
+          isLoadingSession={isLoadingSession}
           messages={rawMessages}
           onConnect={connect}
           onDisconnect={disconnect}
           onInitialize={initialize}
           onCreateSession={createSession}
+          onLoadSession={loadSession}
           onResumeSession={resumeSession}
           onToggleAutoNewSession={setAutoNewSession}
           onClear={clearMessages}

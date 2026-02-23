@@ -22,6 +22,7 @@ export interface ToolCall {
   toolName?: string
   parentToolCallId?: string
   children?: ToolCall[]
+  rawInput?: Record<string, unknown>
 }
 
 export interface PermissionOption {

@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import type {
+  LoadSessionRequest,
   NewSessionRequest,
   PromptRequest,
   ResumeSessionRequest,
@@ -340,12 +341,14 @@ export function useWebSocket() {
   const [selectedModelId, setSelectedModelId] = useState<string>(FALLBACK_MODELS.find(option => option.id === 'opus')?.id ?? FALLBACK_MODELS[0].id)
   const [autoNewSessionEnabled, setAutoNewSessionEnabled] = useState<boolean>(() => readStoredAutoNewSessionEnabled())
   const [recentSessionIds, setRecentSessionIds] = useState<string[]>(() => readStoredSessionIds())
+  const [isLoadingSession, setIsLoadingSession] = useState(false)
   const [roundMetricsByPromptId, setRoundMetricsByPromptId] = useState<Record<string, ChatRoundMetrics>>({})
   const wsRef = useRef<WebSocket | null>(null)
   const initRequestIdRef = useRef<number | null>(null)
   const resumeRequestMapRef = useRef<Map<number, { sessionId: string; auto: boolean }>>(new Map())
+  const loadRequestMapRef = useRef<Map<number, { sessionId: string }>>(new Map())
   const autoSessionCreatedRef = useRef(false)
-  const streamingRoleRef = useRef<StreamingRole>(null)
+  const streamingRoleRef = useRef<StreamingRole | 'user'>(null)
   const streamingMessageIdRef = useRef<string | null>(null)
   const toolCallGroupIdRef = useRef<string | null>(null)
   const activePromptIdRef = useRef<string | null>(null)
@@ -371,7 +374,7 @@ export function useWebSocket() {
     return id
   }, [])
 
-  const appendToStreamingMessage = useCallback((role: 'assistant' | 'thought', text: string) => {
+  const appendToStreamingMessage = useCallback((role: 'assistant' | 'thought' | 'user', text: string) => {
     // Reset tool call group when text streaming starts
     toolCallGroupIdRef.current = null
 
@@ -635,12 +638,13 @@ export function useWebSocket() {
 
         const rawStatus = toolUpdate.status
         const status = typeof rawStatus === 'string' ? mapToolCallStatus(rawStatus) : undefined
-        const title = typeof toolUpdate.title === 'string' ? toolUpdate.title : undefined
+        let title = typeof toolUpdate.title === 'string' ? toolUpdate.title : undefined
         const kind = typeof toolUpdate.kind === 'string' ? toolUpdate.kind : undefined
         const contentText = extractContentText(toolUpdate.content)
         const locations = toolUpdate.locations
         const rawInput = toolUpdate.rawInput as Record<string, unknown> | undefined
         const promptText = typeof rawInput?.prompt === 'string' ? rawInput.prompt : undefined
+        const skillName = typeof rawInput?.skill === 'string' ? rawInput.skill : undefined
 
         // Extract parentToolCallId and toolName from _meta.claudeCode
         const meta = toolUpdate._meta as Record<string, unknown> | undefined
@@ -650,6 +654,11 @@ export function useWebSocket() {
 
         // Skip AskUserQuestion – it is displayed via the permission request flow
         if (toolName === 'AskUserQuestion') return
+
+        // For Skill tool, show the skill name as the title
+        if (toolName === 'Skill' && skillName) {
+          title = skillName
+        }
 
         // Helper: recursively find and update a tool call by id within nested children
         const updateToolCallInList = (list: ToolCall[], id: string, updater: (tc: ToolCall) => ToolCall): ToolCall[] => {
@@ -707,6 +716,7 @@ export function useWebSocket() {
                   ...(promptText && { promptText }),
                   ...(contentText && { content: contentText }),
                   ...(locations !== undefined && { locations }),
+                  ...(rawInput && { rawInput }),
                 })),
               }
             })
@@ -722,6 +732,7 @@ export function useWebSocket() {
             ...(locations !== undefined && { locations }),
             ...(toolName && { toolName }),
             ...(parentToolCallId && { parentToolCallId }),
+            ...(rawInput && { rawInput }),
           }
 
           // If this tool call has a parent, nest it under the parent
@@ -742,15 +753,28 @@ export function useWebSocket() {
           // No parent or parent not found – add as top-level tool call
           if (toolCallGroupIdRef.current) {
             const currentGroupId = toolCallGroupIdRef.current
-            const groupExists = prev.some(
+            const currentGroupIndex = prev.findIndex(
               msg => msg.id === currentGroupId && msg.role === 'tool_call_group'
             )
-            if (groupExists) {
-              return prev.map(msg =>
-                msg.id === currentGroupId && msg.role === 'tool_call_group'
-                  ? { ...msg, toolCalls: [...(msg.toolCalls || []), newToolCall] }
-                  : msg
-              )
+
+            if (currentGroupIndex >= 0) {
+              // Prevent stale carry-over across turns:
+              // only append to the current group if there is no later non-system message.
+              const hasNonSystemAfterGroup = prev
+                .slice(currentGroupIndex + 1)
+                .some(msg => msg.role !== 'system')
+
+              if (hasNonSystemAfterGroup) {
+                toolCallGroupIdRef.current = null
+              } else {
+                return prev.map(msg =>
+                  msg.id === currentGroupId && msg.role === 'tool_call_group'
+                    ? { ...msg, toolCalls: [...(msg.toolCalls || []), newToolCall] }
+                    : msg
+                )
+              }
+            } else {
+              toolCallGroupIdRef.current = null
             }
           }
 
@@ -780,6 +804,66 @@ export function useWebSocket() {
         }
       }
 
+      if (sessionUpdate === 'user_message_chunk') {
+        const content = update.content as ContentBlock
+        if (content.type === 'text') {
+          appendToStreamingMessage('user', content.text)
+        }
+      }
+
+      if (sessionUpdate === 'user_message') {
+        const content = update.content as ContentBlock
+        if (content.type === 'text') {
+          // New user turn starts: never keep appending tool calls to previous group.
+          toolCallGroupIdRef.current = null
+          const streamingMessageId = streamingRoleRef.current === 'user'
+            ? streamingMessageIdRef.current
+            : null
+
+          if (streamingMessageId) {
+            setChatMessages(prev => {
+              let found = false
+              const next = prev.map(msg => {
+                if (msg.id !== streamingMessageId) return msg
+                found = true
+                return {
+                  ...msg,
+                  role: 'user' as const,
+                  content: content.text,
+                }
+              })
+
+              if (found) return next
+
+              return [...prev, {
+                id: streamingMessageId,
+                role: 'user' as const,
+                content: content.text,
+                timestamp: new Date(),
+              }]
+            })
+
+            streamingRoleRef.current = null
+            streamingMessageIdRef.current = null
+            return
+          }
+
+          setChatMessages(prev => {
+            const lastMessage = prev[prev.length - 1]
+            if (lastMessage?.role === 'user' && lastMessage.content === content.text) {
+              return prev
+            }
+
+            return [...prev, {
+              id: crypto.randomUUID(),
+              role: 'user',
+              content: content.text,
+              timestamp: new Date(),
+            }]
+          })
+        }
+      }
+
       if (sessionUpdate === 'tool_call' || sessionUpdate === 'tool_call_update' || sessionUpdate === 'tool_update') {
         upsertToolCall(update)
       }
@@ -806,18 +890,24 @@ export function useWebSocket() {
         if (data.method && data.id !== undefined) {
           // Server-to-client JSON-RPC request (needs a response)
           handleServerRequest(data.id, data.method, data.params)
-        } else if (data.result) {
+        } else if ('result' in data) {
           const resumeMeta = typeof data.id === 'number'
             ? resumeRequestMapRef.current.get(data.id)
             : undefined
+          const loadMeta = typeof data.id === 'number'
+            ? loadRequestMapRef.current.get(data.id)
+            : undefined
+          const resultObj = data.result && typeof data.result === 'object'
+            ? data.result as Record<string, unknown>
+            : undefined
 
-          const modeState = readModeState(data.result.modes)
+          const modeState = readModeState(resultObj?.modes)
           if (modeState) {
             setModeOptions(modeState.options)
             setSelectedModeId(modeState.currentModeId)
           }
 
-          const modelState = readModelState(data.result.models)
+          const modelState = readModelState(resultObj?.models)
           if (modelState) {
             setModelOptions(modelState.options)
             setSelectedModelId(modelState.currentModelId)
@@ -831,23 +921,41 @@ export function useWebSocket() {
             return
           }
 
+          if (loadMeta) {
+            loadRequestMapRef.current.delete(data.id)
+            setIsLoadingSession(false)
+            setSessionId(loadMeta.sessionId)
+            setRecentSessionIds(persistSessionId(loadMeta.sessionId))
+            endStreaming()
+            addChatMessage('system', `Session loaded (${loadMeta.sessionId})`)
+            return
+          }
+
           // Handle initialize response
           if (data.id === initRequestIdRef.current) {
             initRequestIdRef.current = null
             setInitialized(true)
-            addChatMessage('system', `Initialized (agent: ${data.result.agentInfo?.name || 'unknown'})`)
-          } else if (data.result.sessionId) {
-            setSessionId(data.result.sessionId)
-            setRecentSessionIds(persistSessionId(data.result.sessionId))
+            const agentName = resultObj?.agentInfo
+              && typeof resultObj.agentInfo === 'object'
+              && typeof (resultObj.agentInfo as Record<string, unknown>).name === 'string'
+              ? (resultObj.agentInfo as Record<string, unknown>).name as string
+              : 'unknown'
+            addChatMessage('system', `Initialized (agent: ${agentName})`)
+          } else if (typeof resultObj?.sessionId === 'string') {
+            setSessionId(resultObj.sessionId)
+            setRecentSessionIds(persistSessionId(resultObj.sessionId))
             addChatMessage('system', 'Session ready')
           }
-          if (data.result.stopReason) {
+          if (resultObj?.stopReason) {
             endStreaming()
-            completeActiveRound(mapStopReasonToStatus(data.result.stopReason), data.result)
+            completeActiveRound(mapStopReasonToStatus(resultObj.stopReason), resultObj)
           }
         } else if (data.error) {
           const resumeMeta = typeof data.id === 'number'
             ? resumeRequestMapRef.current.get(data.id)
+            : undefined
+          const loadMeta = typeof data.id === 'number'
+            ? loadRequestMapRef.current.get(data.id)
             : undefined
 
           if (resumeMeta) {
@@ -862,6 +970,14 @@ export function useWebSocket() {
               addRawMessage('sent', fallbackRequest)
               wsRef.current.send(JSON.stringify(fallbackRequest))
             }
+            return
+          }
+
+          if (loadMeta) {
+            loadRequestMapRef.current.delete(data.id)
+            setIsLoadingSession(false)
+            addChatMessage('system', `Load failed: ${data.error.message}`)
+            endStreaming()
             return
           }
 
@@ -894,6 +1010,8 @@ export function useWebSocket() {
       activePromptIdRef.current = null
       activePromptRequestIdRef.current = null
       resumeRequestMapRef.current.clear()
+      loadRequestMapRef.current.clear()
+      setIsLoadingSession(false)
       autoSessionCreatedRef.current = false
       addChatMessage('system', 'Disconnected')
       endStreaming()
@@ -956,6 +1074,45 @@ export function useWebSocket() {
     addRawMessage('sent', request)
     wsRef.current.send(JSON.stringify(request))
   }, [addRawMessage, addChatMessage])
+
+  const loadSession = useCallback((targetSessionId: string) => {
+    const loadTarget = targetSessionId.trim()
+    if (!loadTarget) return
+    if (isLoadingSession) return
+
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      addChatMessage('system', 'Cannot load: not connected')
+      return
+    }
+
+    if (!initialized) {
+      addChatMessage('system', 'Cannot load: session is not initialized')
+      return
+    }
+
+    setRoundMetricsByPromptId({})
+    activePromptIdRef.current = null
+    activePromptRequestIdRef.current = null
+    setSessionId(null)
+    setChatMessages([])
+    setRawMessages([])
+    endStreaming()
+    setIsLoadingSession(true)
+
+    const request = createJsonRpcRequest('session/load', {
+      sessionId: loadTarget,
+      cwd: DEFAULT_CWD,
+      mcpServers: [],
+    } satisfies LoadSessionRequest)
+
+    loadRequestMapRef.current.clear()
+    loadRequestMapRef.current.set(request.id, {
+      sessionId: loadTarget,
+    })
+
+    addRawMessage('sent', request)
+    wsRef.current.send(JSON.stringify(request))
+  }, [addRawMessage, addChatMessage, endStreaming, initialized, isLoadingSession])
 
   const sendPrompt = useCallback((text: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || !sessionId) return
@@ -1044,6 +1201,8 @@ export function useWebSocket() {
     activePromptIdRef.current = null
     activePromptRequestIdRef.current = null
     resumeRequestMapRef.current.clear()
+    loadRequestMapRef.current.clear()
+    setIsLoadingSession(false)
     endStreaming()
   }, [endStreaming])
 
@@ -1097,12 +1256,14 @@ export function useWebSocket() {
     selectedModelId,
     autoNewSessionEnabled,
     recentSessionIds,
+    isLoadingSession,
     roundMetricsByPromptId,
     connect,
     disconnect,
     initialize: sendInitialize,
     createSession,
     resumeSession,
+    loadSession,
     setAutoNewSession,
     sendPrompt,
     setMode,
